@@ -56,7 +56,7 @@ Tmux Helpers:
 
 Pentest Helpers:
   annexes ip                                     Print IP of tun0 (useful for payloads)
-  annexes serve [port]                           Start HTTP server in current project's /tmp
+  annexes serve [port]                           Start HTTP server in current projects /tmp
   annexes scope <ip/range>                       Add target to scope.txt
   annexes note <text>                            Quickly append line to notes.md
   annexes scan [-u] <ip>                         Deep nmap scan with triggered nuclie, enum4linux and feroxbuster scans
