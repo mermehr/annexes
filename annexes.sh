@@ -43,7 +43,7 @@ Pentest Helpers:
   annexes serve [port]                           Start HTTP server in current project's /tmp
   annexes scope <ip/range>                       Add target to scope.txt
   annexes note <text>                            Quickly append line to notes.md
-  annexes scan [-u] <ip>                         Deep nmap scan with triggered Nuclie, AD and Feroxbuster scans
+  annexes scan [-u] <ip>                         Deep nmap scan will trigger prompts for further scans
 
 Options (init):
   -f, --force     Reuse existing directory if it already exists
@@ -489,20 +489,36 @@ scan_target() {
 
   # Web Check
   if [[ ",$ports," =~ ,(80|443|8080|8000|3000|5000), ]]; then
-      echo "[+] Web detected! Spawning Ferox & Nuclei in 'scans' window..."
+      echo "[+] Web detected!"
+      read -p "[?] Run wafw00f to check for firewalls? [Y/n] " -r ans
+      if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
+          echo "[*] Running wafw00f..."
+          wafw00f "http://$ip" || echo "[!] wafw00f failed or not installed"
+      fi
 
-      tmux split-window -t "$target_win" -c "$proj" \
-        "feroxbuster -u http://$ip -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -t 50 -o $proj/logs/ferox.txt; read"
-
-      tmux split-window -t "$target_win" -c "$proj" \
-        "nuclei -u http://$ip -o $proj/logs/nuclei.txt; read"
+      read -p "[?] Run aggressive HTTP scans (Feroxbuster/Nuclei)? [Y/n] " -r ans
+      if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
+          echo "[+] Spawning Ferox & Nuclei in 'scans' window..."
+          tmux split-window -t "$target_win" -c "$proj" \
+            "feroxbuster -u http://$ip -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -t 50 -o $proj/logs/ferox.txt; read"
+          tmux split-window -t "$target_win" -c "$proj" \
+            "nuclei -u http://$ip -o $proj/logs/nuclei.txt; read"
+      else
+          echo "[-] Skipping HTTP scans."
+      fi
   fi
 
   # SMB Check
   if [[ ",$ports," == *",445,"* ]]; then
-      echo "[+] SMB detected! Spawning Enum4linux in 'scans' window..."
-      tmux split-window -t "$target_win" -c "$proj" \
-        "enum4linux-ng -A $ip | tee $proj/logs/smb_enum.txt; read"
+      echo "[+] SMB detected!"
+      read -p "[?] Run Enum4linux? [Y/n] " -r ans
+      if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
+          echo "[+] Spawning Enum4linux in 'scans' window..."
+          tmux split-window -t "$target_win" -c "$proj" \
+            "enum4linux-ng -A $ip | tee $proj/logs/smb_enum.txt; read"
+      else
+          echo "[-] Skipping SMB scan."
+      fi
   fi
 
   tmux select-layout -t "$target_win" tiled
