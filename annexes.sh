@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
-# What you read is what you get
-# ~/bin/anx
-# Projects in /opt/annexes/<name>
-# Active symlink at ~/current
-# Screenshots to ~/current/screens
-# Scan logs to ~/current/logs
+# Personal bash project manager and ctf assistant
 
 set -euo pipefail
 
-BASE="/opt/annexes"
+BASE="~/Documents/projects"
 LINK="$HOME/current"
 VPN_IFACE="tun0"
 
@@ -24,26 +19,26 @@ usage() {
 
 
 Usage:
-  annexes init [--force] [--no-relink] <name>    Create project and point ~/current to it
-  annexes box  [--force] [--no-relink] <name>    Create project with engagment files and point ~/current to it
-  annexes link <name>                            Point ~/current to existing project
-  annexes list                                   List projects (mark current with *)
-  annexes edit                                   Open project in GUI editor (Typora/VNote)
-  annexes shot                                   Flameshot to ~/current/screens
-  annexes host <ip> <hostname>                   Adds and edits /etc/hosts file
-  annexes archive                                Archives the current project
+  init [--force] [--no-relink] <name>    Create project and point ~/current to it
+  ctf  [--force] [--no-relink] <name>    Create project with ctf files and point ~/current to it
+  link <name>                            Point ~/current to existing project
+  list                                   List projects (mark current with *)
+  edit                                   Open project in GUI editor (Typora/VNote)
+  shot                                   Flameshot to ~/current/screens
+  host <ip> <hostname>                   Adds and edits /etc/hosts file
+  archive                                Archives the current project
 
 Tmux Helpers:
-  annexes tmux                                   Launches pre-configured layout for standard engagement
-  annexes cap                                    Save current pane visible text to logs (strips color)
-  annexes hist                                   Save entire pane scrollback to logs (strips color)
+  tmux                                   Launches pre-configured layout for standard engagement
+  cap                                    Save current pane visible text to logs (strips color)
+  hist                                   Save entire pane scrollback to logs (strips color)
 
 Pentest Helpers:
-  annexes ip                                     Print IP of tun0 (useful for payloads)
-  annexes serve [port]                           Start HTTP server in current project's /tmp
-  annexes scope <ip/range>                       Add target to scope.txt
-  annexes note <text>                            Quickly append line to notes.md
-  annexes scan [-u] <ip>                         Deep nmap scan will trigger prompts for further scans
+  ip                                     Print IP of tun0 (useful for payloads)
+  serve [port]                           Start HTTP server in current project's /tmp
+  scope <ip/range>                       Add target to scope.txt
+  note <text>                            Quickly append line to notes.md
+  scan [-u] <ip>                         Deep nmap scan will trigger prompts for further scans
 
 Options (init):
   -f, --force     Reuse existing directory if it already exists
@@ -92,7 +87,9 @@ strip_colors() {
 
 # --- commands ----
 
-init_project() {
+_init_generic() {
+  local mode="$1"
+  shift
   local force=0 norelink=0 name=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -116,10 +113,22 @@ init_project() {
     # Initial dirs
     mkdir -p "$proj"/{logs,assets,tmp,loot}
   fi
-  # Initial files for standard proj
-  mkfile_if_absent "$proj/notes.md"  "## Notes - $name"
+
+  # Common files
   mkfile_if_absent "$proj/scope.txt" ""
   mkfile_if_absent "$proj/logs/commands.log" ""
+
+  if [[ "$mode" == "ctf" ]]; then
+    mkfile_if_absent "$proj/notes.md"  "# Notes"
+    mkfile_if_absent "$proj/Overview.md"  "# Overview"
+    mkfile_if_absent "$proj/Enum.md"  "# Enumeration"
+    mkfile_if_absent "$proj/Services.md"  "# Service Discovery"
+    mkfile_if_absent "$proj/Foothold.md"  "# Foothold"
+    mkfile_if_absent "$proj/Privsec.md"  "# Privilege Escalation"
+    mkfile_if_absent "$proj/Post.md"  "# Post Exploit and Appendix"
+  else
+    mkfile_if_absent "$proj/notes.md"  "## Notes - $name"
+  fi
 
   if (( norelink==0 )); then
     safe_link "$proj" "$LINK"
@@ -130,49 +139,12 @@ init_project() {
   fi
 }
 
-init_box() {
-  # Same as init_project just with different files
-  local force=0 norelink=0 name=""
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      -f|--force) force=1; shift ;;
-      --no-relink) norelink=1; shift ;;
-      -h|--help) usage; exit 0 ;;
-      *) name="$1"; shift ;;
-    esac
-  done
+init_project() {
+  _init_generic "standard" "$@"
+}
 
-  [[ -z "${name:-}" ]] && { echo "[!] Project name required"; exit 1; }
-
-  local proj="$BASE/$name"
-
-  if [[ -d "$proj" ]]; then
-    if (( force==0 )); then
-      echo "[!] $proj already exists. Use --force to reuse." >&2
-      exit 1
-    fi
-  else
-    # Initial dirs
-    mkdir -p "$proj"/{logs,assets,tmp,loot}
-  fi
-  # Initial files for standard box
-  mkfile_if_absent "$proj/notes.md"  "## Notes"
-  mkfile_if_absent "$proj/Overview.md"  "## Overview"
-  mkfile_if_absent "$proj/Enum.md"  "## Enumeration"
-  mkfile_if_absent "$proj/Services.md"  "## Service Discovery"
-  mkfile_if_absent "$proj/Foothold.md"  "## Foothold"
-  mkfile_if_absent "$proj/Privsec.md"  "## Privilege Escalation"
-  mkfile_if_absent "$proj/Post.md"  "## Post Exploit and Appendix"
-  mkfile_if_absent "$proj/scope.txt" ""
-  mkfile_if_absent "$proj/logs/commands.log" ""
-
-  if (( norelink==0 )); then
-    safe_link "$proj" "$LINK"
-    echo "[+] Project ready: $proj"
-    echo "[+] Symlink set:  $LINK -> $proj"
-  else
-    echo "[+] Project created: $proj (not relinked)"
-  fi
+init_ctf() {
+  _init_generic "ctf" "$@"
 }
 
 link_project() {
@@ -284,7 +256,7 @@ archive_project() {
 
 # --- Tmux Functions ---
 
-tmux_htb() {
+tmux_pen() {
   # Customizable tmux session helper
   require_active
   local session="pen"
@@ -367,7 +339,7 @@ get_ip() {
 host_add() {
   # Manages the host file, will detect, add, update or remove entries
     if [ "$#" -ne 2 ]; then
-        echo "Usage: annexes host <IP> <HOSTNAME>"
+        echo "Usage: host <IP> <HOSTNAME>"
         return 1
     fi
     local ip=$1
@@ -485,7 +457,25 @@ scan_target() {
   echo "[*] Starting Version/Script Scan on active ports..."
   nmap -Pn -n -sC -sV -v -p "$ports" -oA "$nmap_dir/detailed" "$ip"
 
-  # --- Automatic Action ---
+  local target_url="http://$ip"
+  local redirect_url=""
+  if [[ -f "$nmap_dir/detailed.nmap" ]]; then
+      redirect_url=$(grep -oP 'Did not follow redirect to \Khttps?://[^/\s]+' "$nmap_dir/detailed.nmap" | head -n 1 || true)
+  fi
+
+  if [[ -n "$redirect_url" ]]; then
+      local clean_host="${redirect_url#*://}"
+      local hostname="${clean_host%%:*}"
+
+      echo "[!] Detected redirect to URL: $redirect_url"
+      read -p "[?] Add $ip $hostname to /etc/hosts? [Y/n] " -r ans
+      if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
+          host_add "$ip" "$hostname"
+          target_url="$redirect_url"
+      fi
+  fi
+
+  # --- Prompt Actions ---
 
   # Web Check
   if [[ ",$ports," =~ ,(80|443|8080|8000|3000|5000), ]]; then
@@ -493,16 +483,16 @@ scan_target() {
       read -p "[?] Run wafw00f to check for firewalls? [Y/n] " -r ans
       if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
           echo "[*] Running wafw00f..."
-          wafw00f "http://$ip" || echo "[!] wafw00f failed or not installed"
+          wafw00f "$target_url" || echo "[!] wafw00f failed or not installed"
       fi
 
       read -p "[?] Run aggressive HTTP scans (Feroxbuster/Nuclei)? [Y/n] " -r ans
       if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
           echo "[+] Spawning Ferox & Nuclei in 'scans' window..."
           tmux split-window -t "$target_win" -c "$proj" \
-            "feroxbuster -u http://$ip -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -t 50 -o $proj/logs/ferox.txt; read"
+            "feroxbuster -u $target_url -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -t 50 -o $proj/logs/ferox.txt; read"
           tmux split-window -t "$target_win" -c "$proj" \
-            "nuclei -u http://$ip -o $proj/logs/nuclei.txt; read"
+            "nuclei -u $target_url -o $proj/logs/nuclei.txt; read"
       else
           echo "[-] Skipping HTTP scans."
       fi
@@ -530,7 +520,7 @@ cmd="${1:-}";
 shift || true
 case "$cmd" in
   init) init_project "$@" ;;
-  box)  init_box "$@" ;;
+  ctf)  init_ctf "$@" ;;
   link) link_project "$@" ;;
   list) list_projects ;;
   edit) edit_project ;;
@@ -541,7 +531,7 @@ case "$cmd" in
   serve) serve_files "$@" ;;
   scope) add_scope "$@" ;;
   note) quick_note "$@" ;;
-  tmux) tmux_htb "$@" ;;
+  tmux) tmux_pen "$@" ;;
   cap)  tmux_cap_screen ;;
   hist) tmux_cap_hist ;;
   scan) scan_target "$@" ;;
