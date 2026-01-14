@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-BASE="~/Documents/projects"
+BASE="$HOME/Documents/projects"
 LINK="$HOME/current"
 VPN_IFACE="tun0"
 
@@ -35,15 +35,16 @@ Tmux Helpers:
 
 Pentest Helpers:
   ip                                     Print IP of tun0 (useful for payloads)
-  serve [port]                           Start HTTP server in current project's /tmp
+  rpd <IP> <user> <pass>                 Quick xfreerdp connection with /dynamic-resolution
+  serve [port]                           Python HTTP server in current project's /tmp
   scope <ip/range>                       Add target to scope.txt
   note <text>                            Quickly append line to notes.md
   scan [-u] <ip>                         Deep nmap scan will trigger prompts for further scans
 
-Options (init):
-  -f, --force     Reuse existing directory if it already exists
-  --no-relink     Create project but do not modify ~/current
-  -u              Performs an additional --top 100 UDP scan
+Options:
+  [init] -f, --force     Reuse existing directory if it already exists
+  [init] --no-relink     Create project but do not modify ~/current
+  [scan] -u              Performs an additional --top 100 UDP scan
 EOF
 }
 
@@ -338,27 +339,27 @@ get_ip() {
 
 host_add() {
   # Manages the host file, will detect, add, update or remove entries
-    if [ "$#" -ne 2 ]; then
-        echo "Usage: host <IP> <HOSTNAME>"
-        return 1
-    fi
-    local ip=$1
-    local hostname=$2
-    local hosts_file="/etc/hosts"
+  if [ "$#" -ne 2 ]; then
+      echo "Usage: host <IP> <HOSTNAME>"
+      return 1
+  fi
+  local ip=$1
+  local hostname=$2
+  local hosts_file="/etc/hosts"
 
-    if grep -q "[[:space:]]$hostname" "$hosts_file"; then
-        echo "[-] Removing existing entry for $hostname..."
-        sudo sed -i "/[[:space:]]$hostname/d" "$hosts_file"
-    fi
+  if grep -q "[[:space:]]$hostname" "$hosts_file"; then
+      echo "[-] Removing existing entry for $hostname..."
+      sudo sed -i "/[[:space:]]$hostname/d" "$hosts_file"
+  fi
 
-    if grep -q "^$ip[[:space:]]" "$hosts_file"; then
-        echo "[+] IP $ip found. Appending $hostname..."
-        sudo sed -i "/^$ip[[:space:]]/ s/$/ $hostname/" "$hosts_file"
-    else
-        echo "[+] IP $ip not found. Creating new entry..."
-        echo "$ip $hostname" | sudo tee -a "$hosts_file" > /dev/null
-    fi
-    grep "^$ip" "$hosts_file"
+  if grep -q "^$ip[[:space:]]" "$hosts_file"; then
+      echo "[+] IP $ip found. Appending $hostname..."
+      sudo sed -i "/^$ip[[:space:]]/ s/$/ $hostname/" "$hosts_file"
+  else
+      echo "[+] IP $ip not found. Creating new entry..."
+      echo "$ip $hostname" | sudo tee -a "$hosts_file" > /dev/null
+  fi
+  grep "^$ip" "$hosts_file"
 }
 
 serve_files() {
@@ -372,6 +373,16 @@ serve_files() {
   echo "[+] Serving $serve_dir on port $port"
   echo "[+] URL: http://$(get_ip):$port/"
   (cd "$serve_dir" && python3 -m http.server "$port")
+}
+
+xfree_rdp() {
+  # Quick and dirty RDP
+  command -v xfreerdp >/dev/null || { echo "[!] xfreerdp not installed"; exit 1; }
+  if [ "$#" -ne 3 ]; then
+      echo "Usage: <IP> <user> <pass>"
+      return 1
+  fi
+  xfreerdp /v:"$1" /u:"$2" /p:"$3" /dynamic-resolution
 }
 
 add_scope() {
@@ -535,6 +546,7 @@ case "$cmd" in
   cap)  tmux_cap_screen ;;
   hist) tmux_cap_hist ;;
   scan) scan_target "$@" ;;
+  rdp) xfree_rdp "$@" ;;
   -h|--help|"") usage ;;
   *) echo "[!] Unknown command: $cmd"; usage; exit 1 ;;
 esac
