@@ -1,412 +1,331 @@
 #!/usr/bin/env bash
-# Personal bash project manager and ctf assistant
+# Personal bash project manager + CTF / pentest assistant
 
 set -euo pipefail
 
-BASE="$HOME/Documents/projects"
-LINK="$HOME/current"
-VPN_IFACE="tun0"
+# ---- Config ----
 
-mkdir -p "$BASE"
+BASE_DIR="${HOME}/Documents/projects"
+CURRENT_LINK="${HOME}/current"
+VPN_INTERFACE="tun0"
+ARCHIVE_DIR="${BASE_DIR}/archive"
+DEFAULT_HTTP_PORT=8000
+
+SCREENSHOT_TOOL="flameshot"
+PREFERRED_EDITOR="typora"           # fallback: vnote, code, etc.
+NMAP_BASE_OPTS="-Pn -n -v --reason --stats-every 10s"
+
+mkdir -p "$BASE_DIR" "$ARCHIVE_DIR"
+
+# ---- Output Helpers ----
+
+red=$(tput setaf 1)
+green=$(tput setaf 2)
+yellow=$(tput setaf 3)
+reset=$(tput sgr0)
+
+msg_ok()    { echo "${green}[+]${reset} $*" ; }
+msg_info()  { echo "${yellow}[*]${reset} $*" ; }
+msg_err()   { echo "${red}[!]${reset} $*" >&2 ; }
+
+# ---- Usage ----
 
 usage() {
   cat <<'EOF'
-                           _
-                          / \   _ __  _ __   _____  _____  ___
-                         / _ \ | '_ \| '_ \ / _ \ \/ / _ \/ __|
-                        / ___ \| | | | | | |  __/>  <  __/\__ \
-                       /_/   \_\_| |_|_| |_|\___/_/\_\___||___/
-
+Personal Project / CTF / Pentest Manager
 
 Usage:
-  init [--force] [--no-relink] <name>    Create project and point ~/current to it
-  ctf  [--force] [--no-relink] <name>    Create project with ctf files and point ~/current to it
-  link <name>                            Point ~/current to existing project
-  list                                   List projects (mark current with *)
-  edit                                   Open project in GUI editor (Typora/VNote)
-  shot                                   Flameshot to ~/current/screens
-  host <ip> <hostname>                   Adds and edits /etc/hosts file
-  archive                                Archives the current project
-
-Tmux Helpers:
-  tmux                                   Launches pre-configured layout for standard engagement
-  cap                                    Save current pane visible text to logs (strips color)
-  hist                                   Save entire pane scrollback to logs (strips color)
-
-Pentest Helpers:
-  ip                                     Print IP of tun0 (useful for payloads)
-  rpd <IP> <user> <pass>                 Quick xfreerdp connection with /dynamic-resolution
-  serve [port]                           Python HTTP server in current project's /tmp
-  scope <ip/range>                       Add target to scope.txt
-  note <text>                            Quickly append line to notes.md
-  scan [-u] <ip>                         Deep nmap scan will trigger prompts for further scans
+  init [--force] [--no-relink] <name>     Create standard project
+  ctf  [--force] [--no-relink] <name>     Create CTF-style project
+  link <name>                             Link existing project to ~/current
+  list                                    List projects (* = current)
+  edit                                    Open current project in editor
+  shot                                    Flameshot → assets/ + link in notes.md
+  archive                                 Zip current project → archive/
+  ip                                      Show VPN IP (tun0 fallback eth0)
+  host <ip> <hostname>                    Add/update /etc/hosts entry
+  serve [port]                            Python HTTP server in ./tmp
+  scope <ip/range>                        Append to scope.txt
+  note <text>                             Append timestamped line to notes.md
+  tmux                                    Launch pre-configured tmux layout
+  cap                                     Save visible pane to logs/
+  hist                                    Save full scrollback to logs/
+  scan [-u] <ip>                          Deep nmap + smart follow-ups
+  rdp <ip> <user> <pass>                  Quick xfreerdp with dynamic res
 
 Options:
-  [init] -f, --force     Reuse existing directory if it already exists
-  [init] --no-relink     Create project but do not modify ~/current
-  [scan] -u              Performs an additional --top 100 UDP scan
+  --force      Reuse existing directory
+  --no-relink  Create project without changing ~/current
+  -u           Add top-100 UDP scan (with scan command)
 EOF
 }
 
-# ---- helpers ----
+# ---- Helper Functions ----
 
 safe_link() {
   local target="$1" link="$2"
   if [[ -e "$link" && ! -L "$link" ]]; then
-    echo "[!] $link exists and is NOT a symlink. Move/rename it first." >&2
+    msg_err "$link exists and is not a symlink. Move/rename it first."
     exit 1
   fi
   ln -sfn "$target" "$link"
+  msg_ok "Symlink updated: $link → $target"
 }
 
-mkfile_if_absent() {
-  local path="$1" content="${2:-}"
-  if [[ ! -e "$path" ]]; then
-    mkdir -p "$(dirname "$path")"
-    printf "%s" "$content" > "$path"
-  fi
+ensure_file() {
+  local path="$1" default_content="${2:-}"
+  [[ -e "$path" ]] && return
+  mkdir -p "$(dirname "$path")"
+  printf '%s\n' "$default_content" > "$path"
 }
 
-require_active() {
-  if [[ ! -L "$LINK" ]]; then
-    echo "[!] No active project (~/current). Use init/link."
+require_current_project() {
+  if [[ ! -L "$CURRENT_LINK" ]]; then
+    msg_err "No active project (~/current not a symlink). Use init or link."
     exit 1
   fi
+  CURRENT_PROJECT="$(readlink -f "$CURRENT_LINK")"
 }
 
-ensure_tmux() {
+ensure_in_tmux() {
   if [[ -z "${TMUX:-}" ]]; then
-    echo "[!] This command requires running inside tmux." >&2
+    msg_err "This command must be run inside tmux."
     exit 1
   fi
 }
 
-strip_colors() {
-  # regex to strip ANSI color codes
-  sed -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[mGK]//g"
+strip_ansi() {
+  sed -r 's/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[mGK]//g'
 }
 
-# --- commands ----
+get_vpn_ip() {
+  local ip
+  ip=$(ip -4 addr show "$VPN_INTERFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' || true)
+  if [[ -z "$ip" ]]; then
+    ip=$(ip -4 addr show eth0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' || echo "127.0.0.1")
+    msg_err "$VPN_INTERFACE not found → fallback: $ip"
+  fi
+  echo "$ip"
+}
 
-_init_generic() {
-  local mode="$1"
-  shift
+# ---- Project Management ----
+
+init_generic() {
+  local mode="$1" ; shift   # "standard" or "ctf"
   local force=0 norelink=0 name=""
+
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -f|--force) force=1; shift ;;
-      --no-relink) norelink=1; shift ;;
-      -h|--help) usage; exit 0 ;;
-      *) name="$1"; shift ;;
+      -f|--force)     force=1    ; shift ;;
+      --no-relink)    norelink=1 ; shift ;;
+      -h|--help)      usage ; exit 0 ;;
+      *)              name="$1"  ; shift ;;
     esac
   done
 
-  [[ -z "${name:-}" ]] && { echo "[!] Project name required"; exit 1; }
+  [[ -z "$name" ]] && { msg_err "Project name required"; exit 1; }
 
-  local proj="$BASE/$name"
+  local proj="$BASE_DIR/$name"
 
   if [[ -d "$proj" ]]; then
-    if (( force==0 )); then
-      echo "[!] $proj already exists. Use --force to reuse." >&2
-      exit 1
-    fi
+    (( force )) || { msg_err "$proj already exists. Use --force"; exit 1; }
   else
-    # Initial dirs
-    mkdir -p "$proj"/{logs,assets,tmp,loot}
+    mkdir -p "$proj"/{logs,assets,tmp,loot,nmap}
   fi
 
-  # Common files
-  mkfile_if_absent "$proj/scope.txt" ""
-  mkfile_if_absent "$proj/logs/commands.log" ""
+  # Common structure
+  ensure_file "$proj/scope.txt"
+  ensure_file "$proj/logs/commands.log"
 
   if [[ "$mode" == "ctf" ]]; then
-    mkfile_if_absent "$proj/notes.md"  "# Notes"
-    mkfile_if_absent "$proj/Overview.md"  "# Overview"
-    mkfile_if_absent "$proj/Enum.md"  "# Enumeration"
-    mkfile_if_absent "$proj/Services.md"  "# Service Discovery"
-    mkfile_if_absent "$proj/Foothold.md"  "# Foothold"
-    mkfile_if_absent "$proj/Privsec.md"  "# Privilege Escalation"
-    mkfile_if_absent "$proj/Post.md"  "# Post Exploit and Appendix"
+    ensure_file "$proj/notes.md"          "# Notes"
+    ensure_file "$proj/Overview.md"       "# Overview"
+    ensure_file "$proj/Enum.md"           "# Enumeration"
+    ensure_file "$proj/Services.md"       "# Service Discovery"
+    ensure_file "$proj/Foothold.md"       "# Foothold"
+    ensure_file "$proj/Privsec.md"        "# Privilege Escalation"
+    ensure_file "$proj/Post.md"           "# Post Exploitation & Appendix"
   else
-    mkfile_if_absent "$proj/notes.md"  "## Notes - $name"
+    ensure_file "$proj/notes.md"          "## Notes - $name"
   fi
 
-  if (( norelink==0 )); then
-    safe_link "$proj" "$LINK"
-    echo "[+] Project ready: $proj"
-    echo "[+] Symlink set:  $LINK -> $proj"
+  if (( norelink == 0 )); then
+    safe_link "$proj" "$CURRENT_LINK"
+    msg_ok "Project ready → $proj"
   else
-    echo "[+] Project created: $proj (not relinked)"
+    msg_ok "Project created (no symlink change) → $proj"
   fi
 }
 
-init_project() {
-  _init_generic "standard" "$@"
-}
-
-init_ctf() {
-  _init_generic "ctf" "$@"
-}
+init_project()  { init_generic "standard" "$@"; }
+init_ctf()      { init_generic "ctf"     "$@"; }
 
 link_project() {
-  # Checks if $proj exists and links it ro ~/current
   local name="${1:-}"
-  [[ -z "$name" ]] && { echo "[!] Project name required"; exit 1; }
-  local proj="$BASE/$name"
-  [[ -d "$proj" ]] || { echo "[!] $proj does not exist"; exit 1; }
-  safe_link "$proj" "$LINK"
-  echo "[+] Symlink set: $LINK -> $proj"
+  [[ -z "$name" ]] && { msg_err "Project name required"; exit 1; }
+  local proj="$BASE_DIR/$name"
+  [[ -d "$proj" ]] || { msg_err "$proj does not exist"; exit 1; }
+  safe_link "$proj" "$CURRENT_LINK"
 }
 
 list_projects() {
-  # Lists $proj and highlights * current
   shopt -s nullglob
-  for d in "$BASE"/*; do
+  for d in "$BASE_DIR"/*; do
     [[ -d "$d" ]] || continue
     local mark=""
-    if [[ -L "$LINK" && "$(readlink -f "$LINK")" == "$(readlink -f "$d")" ]]; then
+    if [[ -L "$CURRENT_LINK" ]] && [[ "$(readlink -f "$CURRENT_LINK")" == "$(readlink -f "$d")" ]]; then
       mark=" *"
     fi
     echo "$(basename "$d")$mark"
   done
 }
 
-take_screenshot() {
-  # Takes a selectable screenshot and dumps it in project folder w/markdown link
-  require_active
-  command -v flameshot >/dev/null || { echo "[!] flameshot not installed"; exit 1; }
-
-  local proj dir file relpath
-  proj="$(readlink -f "$LINK")"
-  dir="$proj/assets"
-  mkdir -p "$dir"
-  file="$dir/$(date +%Y%m%d-%H%M%S).png"
-
-  flameshot gui -p "$file" || { echo "[!] flameshot canceled"; return; }
-
-  relpath="assets/$(basename "$file")"
-  echo -e "\n![screenshot]($relpath)" >> "$proj/notes.md"
-  echo "[+] Screenshot saved: $file"
-  echo "[+] Linked in: $proj/notes.md"
-}
-
-edit_project() {
-  # Set this to quick open the $proj in your flavour of editors
-  require_active
-  local proj
-  proj="$(readlink -f "$LINK")"
-
-  if command -v typora &>/dev/null; then
-      echo "[+] Opening $proj in Typora..."
-      typora "$proj" &>/dev/null &
-  elif command -v vnote &>/dev/null; then
-      echo "[+] Opening $proj in VNote..."
-      vnote "$proj" &>/dev/null &
-  else
-      echo "[!] No GUI editor found."
-  fi
-}
-
 archive_project() {
-  # Warning with this function, this is highly recomended to edit as it can destroy data
-  # Also will depend on how you manage your data ie: I use VNote and like archived backups
-  require_active
+  require_current_project
+  command -v zip >/dev/null 2>&1 || { msg_err "'zip' not found – install it"; exit 1; }
 
-  # Check for zip dependency
-  if ! command -v zip &>/dev/null; then
-      echo "[!] 'zip' command not found. Please install it."
-      exit 1
-  fi
+  local name="$(basename "$CURRENT_PROJECT")"
+  local ts=$(date +%Y%m%d)
+  local zipfile="$ARCHIVE_DIR/${name}_${ts}.zip"
 
-  local proj
-  proj="$(readlink -f "$LINK")"
-  local name
-  name="$(basename "$proj")"
-
-  local vnote_root="$HOME/vnote/pentest"
-  local archive_dir="$BASE/archive"
-  local timestamp
-  timestamp=$(date +%Y%m%d)
-
-  # Safety check: ensure destination doesn't already exist in VNote
-  if [[ -d "$vnote_root/$name" ]]; then
-      echo "[!] Archive failed: $vnote_root/$name already exists."
-      exit 1
-  fi
-
-  mkdir -p "$vnote_root"
-  mkdir -p "$archive_dir"
-
-  # Create the Zip Backup
-  echo "[*] Zipping project to $archive_dir..."
-  if (cd "$BASE" && zip -r -q "$archive_dir/${name}_${timestamp}.zip" "$name"); then
-      echo "[+] Backup created: $archive_dir/${name}_${timestamp}.zip"
+  msg_info "Creating archive → $zipfile"
+  if (cd "$BASE_DIR" && zip -r -q "$zipfile" "$name"); then
+    msg_ok "Archive created: $zipfile"
   else
-      echo "[!] Zip failed. Aborting archive to prevent data loss."
-      exit 1
+    msg_err "Zip failed – aborting"
+    exit 1
   fi
-
-  # Move to VNote
-  echo "[*] Moving $name to VNote..."
-  mv "$proj" "$vnote_root/"
-
-  # Remove the symlink since the source is gone
-  rm "$LINK"
-  echo "[+] Moved to $vnote_root/$name. Run 'VNote' to rescan."
 }
 
-# --- Tmux Functions ---
+# ---- Editors and Screenshots
 
-tmux_pen() {
-  # Customizable tmux session helper
-  require_active
-  local session="pen"
+open_editor() {
+  require_current_project
+  if command -v "$PREFERRED_EDITOR" &>/dev/null; then
+    msg_ok "Opening in $PREFERRED_EDITOR..."
+    "$PREFERRED_EDITOR" "$CURRENT_PROJECT" &>/dev/null &
+  elif command -v vnote &>/dev/null; then
+    msg_ok "Opening in VNote..."
+    vnote "$CURRENT_PROJECT" &>/dev/null &
+  else
+    msg_err "No supported GUI editor found"
+  fi
+}
 
-  # Check if session exists
+take_screenshot() {
+  require_current_project
+  command -v "$SCREENSHOT_TOOL" >/dev/null || { msg_err "$SCREENSHOT_TOOL not installed"; exit 1; }
+
+  local dir="$CURRENT_PROJECT/assets"
+  mkdir -p "$dir"
+  local file="$dir/$(date +%Y%m%d-%H%M%S).png"
+  local rel="assets/$(basename "$file")"
+
+  "$SCREENSHOT_TOOL" gui -p "$file" || { msg_info "Flameshot canceled"; return; }
+
+  echo -e "\n![screenshot]($rel)" >> "$CURRENT_PROJECT/notes.md"
+  msg_ok "Screenshot saved → $file"
+  msg_ok "Linked in notes.md"
+}
+
+# ---- Tmux Helpers ----
+
+launch_tmux_session() {
+  require_current_project
+  local session="pentest"
+
   if tmux has-session -t "$session" 2>/dev/null; then
     if [[ -n "${TMUX:-}" ]]; then
-        tmux switch-client -t "$session"
+      tmux switch-client -t "$session"
     else
-        tmux attach -t "$session"
+      tmux attach -t "$session"
     fi
     return
   fi
 
-  # Create detached session, explicitly naming window 'htb'
-  tmux new-session -d -s "$session" -n "main" -c "$HOME/current"
-
-  # Target window by NAME 'pen' (safe for base-index 0 or 1)
-  # tmux split-window -v -t "${session}:htb" -c "$HOME/current"
-
-  tmux new-window -d -t "${session}:" -n "scans" -c "$HOME/current"
-
-  tmux select-window -t "${session}:main"
-  tmux select-pane   -t "${session}:main.1"
+  tmux new-session -d -s "$session" -n "main" -c "$CURRENT_PROJECT"
+  tmux new-window -d -t "$session:" -n "scans" -c "$CURRENT_PROJECT"
+  tmux select-window -t "$session:main"
 
   if [[ -n "${TMUX:-}" ]]; then
-      tmux switch-client -t "$session"
+    tmux switch-client -t "$session"
   else
-      tmux attach -t "$session"
+    tmux attach -t "$session"
   fi
 }
 
-tmux_cap_screen() {
-  # Captures terminal screen and dumps it to file
-  require_active
-  ensure_tmux
-
-  local proj
-  proj="$(readlink -f "$LINK")"
-  local timestamp
-  timestamp=$(date +%Y%m%d-%H%M%S)
-  local outfile="$proj/logs/${timestamp}_screen.log"
-
-  # -p: print to stdout
-  tmux capture-pane -p | strip_colors > "$outfile"
-
-  echo "[+] Screen text captured to: $outfile"
+capture_pane() {
+  require_current_project
+  ensure_in_tmux
+  local ts=$(date +%Y%m%d-%H%M%S)
+  local out="$CURRENT_PROJECT/logs/${ts}_pane.log"
+  tmux capture-pane -p | strip_ansi > "$out"
+  msg_ok "Pane captured → $out"
 }
 
-tmux_cap_hist() {
-  # Captures scrollback buffer and dumps it to file
-  require_active
-  ensure_tmux
-
-  local proj
-  proj="$(readlink -f "$LINK")"
-  local timestamp
-  timestamp=$(date +%Y%m%d-%H%M%S)
-  local outfile="$proj/logs/${timestamp}_history.log"
-
-  # -S - : start from the very beginning of history
-  tmux capture-pane -p -S - | strip_colors > "$outfile"
-
-  echo "[+] Full history captured to: $outfile"
+capture_history() {
+  require_current_project
+  ensure_in_tmux
+  local ts=$(date +%Y%m%d-%H%M%S)
+  local out="$CURRENT_PROJECT/logs/${ts}_history.log"
+  tmux capture-pane -p -S - | strip_ansi > "$out"
+  msg_ok "Full history captured → $out"
 }
 
-# --- Pentest Functions ---
+# ---- Quick Commands ----
 
-get_ip() {
-  # Gets vpn interface ip, cleaner than "ip -a" or "ifconfig tun0"
-  local ip
-  ip=$(ip -4 addr show "$VPN_IFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' || true)
-  if [[ -z "$ip" ]]; then
-     ip=$(ip -4 addr show eth0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' || echo "127.0.0.1")
-     echo "[!] $VPN_IFACE not found, using alternative: $ip" >&2
+add_host_entry() {
+  if [[ $# -ne 2 ]]; then
+    echo "Usage: host <ip> <hostname>"
+    return 1
   fi
-  echo "$ip"
-}
+  local ip="$1" hostname="$2" hosts="/etc/hosts"
 
-host_add() {
-  # Manages the host file, will detect, add, update or remove entries
-  if [ "$#" -ne 2 ]; then
-      echo "Usage: host <IP> <HOSTNAME>"
-      return 1
-  fi
-  local ip=$1
-  local hostname=$2
-  local hosts_file="/etc/hosts"
-
-  if grep -q "[[:space:]]$hostname" "$hosts_file"; then
-      echo "[-] Removing existing entry for $hostname..."
-      sudo sed -i "/[[:space:]]$hostname/d" "$hosts_file"
+  if grep -q "[[:space:]]$hostname" "$hosts"; then
+    msg_info "Removing old entry for $hostname"
+    sudo sed -i "/[[:space:]]$hostname/d" "$hosts"
   fi
 
-  if grep -q "^$ip[[:space:]]" "$hosts_file"; then
-      echo "[+] IP $ip found. Appending $hostname..."
-      sudo sed -i "/^$ip[[:space:]]/ s/$/ $hostname/" "$hosts_file"
+  if grep -q "^$ip[[:space:]]" "$hosts"; then
+    msg_info "Appending $hostname to existing $ip line"
+    sudo sed -i "/^$ip[[:space:]]/ s/$/ $hostname/" "$hosts"
   else
-      echo "[+] IP $ip not found. Creating new entry..."
-      echo "$ip $hostname" | sudo tee -a "$hosts_file" > /dev/null
+    msg_info "Adding new entry"
+    echo "$ip $hostname" | sudo tee -a "$hosts" >/dev/null
   fi
-  grep "^$ip" "$hosts_file"
+  grep "^$ip" "$hosts"
 }
 
-serve_files() {
-  # Starts a python http.server in ./tmp/
-  require_active
-  local port="${1:-8000}"
-  local proj
-  proj="$(readlink -f "$LINK")"
-  local serve_dir="$proj/tmp"
-  mkdir -p "$serve_dir"
-  echo "[+] Serving $serve_dir on port $port"
-  echo "[+] URL: http://$(get_ip):$port/"
-  (cd "$serve_dir" && python3 -m http.server "$port")
+start_http_server() {
+  require_current_project
+  local port="${1:-$DEFAULT_HTTP_PORT}"
+  local srv_dir="$CURRENT_PROJECT/tmp"
+  mkdir -p "$srv_dir"
+  msg_ok "Serving $srv_dir on http://$(get_vpn_ip):$port/"
+  (cd "$srv_dir" && python3 -m http.server "$port")
 }
 
-xfree_rdp() {
-  # Quick and dirty RDP
-  command -v xfreerdp >/dev/null || { echo "[!] xfreerdp not installed"; exit 1; }
-  if [ "$#" -ne 3 ]; then
-      echo "Usage: <IP> <user> <pass>"
-      return 1
-  fi
-  xfreerdp /v:"$1" /u:"$2" /p:"$3" /dynamic-resolution
-}
-
-add_scope() {
-  # Quick add to scope
-  require_active
+add_scope_item() {
+  require_current_project
   local item="${1:-}"
-  [[ -z "$item" ]] && { echo "[!] Target IP/Range required"; exit 1; }
-  local proj
-  proj="$(readlink -f "$LINK")"
-  echo "$item" >> "$proj/scope.txt"
-  echo "[+] Added to scope: $item"
+  [[ -z "$item" ]] && { msg_err "IP/range required"; exit 1; }
+  echo "$item" >> "$CURRENT_PROJECT/scope.txt"
+  msg_ok "Added to scope.txt → $item"
 }
 
 quick_note() {
-  # Quick note with timestamp
-  require_active
-  local note="${*:-}"
-  [[ -z "$note" ]] && { echo "[!] Note text required"; exit 1; }
-  local proj
-  proj="$(readlink -f "$LINK")"
-  local timestamp
-  timestamp=$(date "+%H:%M")
-  echo -e "\n- **$timestamp**: $note" >> "$proj/notes.md"
-  echo "[+] Note added."
+  require_current_project
+  local text="${*:-}"
+  [[ -z "$text" ]] && { msg_err "Note text required"; exit 1; }
+  local ts=$(date +"%H:%M")
+  echo -e "\n- **$ts**: $text" >> "$CURRENT_PROJECT/notes.md"
+  msg_ok "Note added"
+}
+
+quick_rdp() {
+  command -v xfreerdp3 >/dev/null 2>&1 || { msg_err "xfreerdp not found"; exit 1; }
+  [[ $# -ne 3 ]] && { echo "Usage: rdp <ip> <user> <pass>"; exit 1; }
+  xfreerdp3 /v:"$1" /u:"$2" /p:"$3" /dynamic-resolution +auto-reconnect
 }
 
 # --- Recon Functions ---
@@ -509,7 +428,7 @@ scan_target() {
       fi
   fi
 
-  # SMB Check
+  # ---- SMB Check ----
   if [[ ",$ports," == *",445,"* ]]; then
       echo "[+] SMB detected!"
       read -p "[?] Run Enum4linux? [Y/n] " -r ans
@@ -525,28 +444,33 @@ scan_target() {
   tmux select-layout -t "$target_win" tiled
 }
 
-# --- dispatcher -----
+# ---- Dispatcher ----
 
-cmd="${1:-}";
-shift || true
-case "$cmd" in
-  init) init_project "$@" ;;
-  ctf)  init_ctf "$@" ;;
-  link) link_project "$@" ;;
-  list) list_projects ;;
-  edit) edit_project ;;
-  archive) archive_project ;;
-  shot) take_screenshot ;;
-  host) host_add "$@" ;;
-  ip)   get_ip ;;
-  serve) serve_files "$@" ;;
-  scope) add_scope "$@" ;;
-  note) quick_note "$@" ;;
-  tmux) tmux_pen "$@" ;;
-  cap)  tmux_cap_screen ;;
-  hist) tmux_cap_hist ;;
-  scan) scan_target "$@" ;;
-  rdp) xfree_rdp "$@" ;;
-  -h|--help|"") usage ;;
-  *) echo "[!] Unknown command: $cmd"; usage; exit 1 ;;
-esac
+main() {
+  local cmd="${1:-}"
+  shift || true
+
+  case "$cmd" in
+    init)     init_project  "$@" ;;
+    ctf)      init_ctf      "$@" ;;
+    link)     link_project  "$@" ;;
+    list)     list_projects     ;;
+    edit)     open_editor       ;;
+    shot)     take_screenshot   ;;
+    archive)  archive_project   ;;
+    ip)       get_vpn_ip        ;;
+    host)     add_host_entry "$@" ;;
+    serve)    start_http_server "$@" ;;
+    scope)    add_scope_item "$@" ;;
+    note)     quick_note    "$@" ;;
+    tmux)     launch_tmux_session ;;
+    cap)      capture_pane      ;;
+    hist)     capture_history   ;;
+    rdp)      quick_rdp     "$@" ;;
+    scan)     scan_target "$@" ;;
+    -h|--help|"") usage ;;
+    *) msg_err "Unknown command: $cmd"; usage; exit 1 ;;
+  esac
+}
+
+main "$@"
