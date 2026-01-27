@@ -347,8 +347,9 @@ scan_target() {
 
   local proj
   proj="$(readlink -f "$CURRENT_LINK")"
-  local nmap_dir="$proj/nmap"
-  mkdir -p "$nmap_dir"
+  # local log_dir="$proj/anx_scan/$ip"
+  local log_dir="$proj/anx_scan/$ip"
+  mkdir -p "$log_dir"
 
   # --- Tmux Setup ---
   local sess
@@ -362,20 +363,12 @@ scan_target() {
   # Target the 'scans' window explicitly
   local target_win="${sess}:scans"
 
-  # --- UDP Scan ---
-  if (( udp == 1 )); then
-      msg_info "UDP Scan requested. Prompting for sudo..."
-      msg_info '[*] Starting UDP Top 100...'
-      sudo grc nmap -Pn -n -sU --top-ports 100 -v -oA "$nmap_dir/udp_top100" "$ip"
-      msg_ok '[+] UDP Done'
-  fi
-
   # --- TCP Fast Scan ---
   msg_info "Starting Fast TCP Scan on $ip..."
-  grc nmap -Pn -n -T4 --min-rate 1000 -p- -oG "$nmap_dir/all_ports.gnmap" "$ip" > /dev/null
+  grc nmap -Pn -n -T4 --min-rate 1000 -p- -oG "$log_dir/all_ports.gnmap" "$ip" > /dev/null
 
   local ports
-  ports=$(cat "$nmap_dir/all_ports.gnmap" | grep "Ports:" | awk -F 'Ports: ' '{print $2}' | tr ',' '\n' | awk '/open/ {print $1}' | awk -F '/' '{print $1}' | tr '\n' ',' | sed 's/,$//')
+  ports=$(cat "$log_dir/all_ports.gnmap" | grep "Ports:" | awk -F 'Ports: ' '{print $2}' | tr ',' '\n' | awk '/open/ {print $1}' | awk -F '/' '{print $1}' | tr '\n' ',' | sed 's/,$//')
 
   if [[ -z "$ports" ]]; then
     msg_err "No open TCP ports found."
@@ -386,12 +379,12 @@ scan_target() {
 
   # --- TCP Deep Scan ---
   msg_info "Starting Version/Script Scan on active ports..."
-  grc nmap -Pn -n -sC -sV -v -p "$ports" -oA "$nmap_dir/detailed" "$ip"
+  grc nmap -Pn -n -sC -sV -T4 -p "$ports" -oA "$log_dir/detailed" "$ip"
 
   local target_url="http://$ip"
   local redirect_url=""
-  if [[ -f "$nmap_dir/detailed.nmap" ]]; then
-      redirect_url=$(grep -oP 'Did not follow redirect to \Khttps?://[^/\s]+' "$nmap_dir/detailed.nmap" | head -n 1 || true)
+  if [[ -f "$log_dir/detailed.nmap" ]]; then
+      redirect_url=$(grep -oP 'Did not follow redirect to \Khttps?://[^/\s]+' "$log_dir/detailed.nmap" | head -n 1 || true)
   fi
 
   if [[ -n "$redirect_url" ]]; then
@@ -421,9 +414,9 @@ scan_target() {
       if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
           msg_ok "Spawning Ferox & Nuclei in 'scans' window..."
           tmux split-window -t "$target_win" -c "$proj" \
-            "feroxbuster -u $target_url -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -t 50 -o $proj/logs/ferox.txt"
+            "feroxbuster -u $target_url -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -t 50 -o $log_dir/ferox.txt"
           tmux split-window -t "$target_win" -c "$proj" \
-            "nuclei -u $target_url -o $proj/logs/nuclei.txt"
+            "nuclei -u $target_url -o $log_dir/nuclei.txt"
       else
           msg_info "Skipping HTTP scans."
       fi
@@ -436,13 +429,21 @@ scan_target() {
       if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
           msg_ok "Spawning Enum4linux in 'scans' window..."
           tmux split-window -t "$target_win" -c "$proj" \
-            "enum4linux-ng -A $ip | tee $proj/logs/smb_enum.txt; read"
+            "enum4linux-ng -A $ip | tee $log_dir/smb_enum.txt"
       else
           msg_info "Skipping SMB scan."
       fi
   fi
+  
+  # --- UDP Scan ---
+  if (( udp == 1 )); then
+      msg_info "UDP Scan requested. Prompting for sudo..."
+      msg_info '[*] Starting UDP Top 1000...'
+      sudo grc nmap -Pn -sU --top-ports 1000 -v -oA "$log_dir/udp_top1000" "$ip"
+      msg_ok '[+] UDP Done'
+  fi
 
-  tmux select-layout -t "$target_win" tiled
+  # tmux select-layout -t "$target_win" tiled
 }
 
 # ---- Dispatcher ----
