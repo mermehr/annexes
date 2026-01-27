@@ -26,6 +26,7 @@ reset=$(tput sgr0)
 
 msg_ok()    { echo "${green}[+]${reset} $*" ; }
 msg_info()  { echo "${yellow}[*]${reset} $*" ; }
+msg_ques()  { echo "${blue}[*]${reset} $*" ; }
 msg_err()   { echo "${red}[!]${reset} $*" >&2 ; }
 
 # ---- Usage ----
@@ -331,7 +332,7 @@ quick_rdp() {
 # --- Recon Functions ---
 
 scan_target() {
-  require_active
+  require_current_project
   local udp=0
   local ip=""
 
@@ -342,10 +343,10 @@ scan_target() {
     esac
   done
 
-  [[ -z "$ip" ]] && { echo "[!] Target IP required"; exit 1; }
+  [[ -z "$ip" ]] && { msg_err "Target IP required"; exit 1; }
 
   local proj
-  proj="$(readlink -f "$LINK")"
+  proj="$(readlink -f "$CURRENT_LINK")"
   local nmap_dir="$proj/nmap"
   mkdir -p "$nmap_dir"
 
@@ -355,7 +356,7 @@ scan_target() {
 
   if ! tmux list-windows -t "${sess}:" | grep -q "scans"; then
       tmux new-window -t "${sess}:" -n "scans" -c "$proj"
-      echo "[+] Created 'scans' window for background tasks."
+      msg_ok "Created 'scans' window for background tasks."
   fi
 
   # Target the 'scans' window explicitly
@@ -363,29 +364,29 @@ scan_target() {
 
   # --- UDP Scan ---
   if (( udp == 1 )); then
-      echo "[*] UDP Scan requested. Prompting for sudo..."
-      tmux split-window -t "$target_win" -c "$proj" \
-        "echo '[*] Starting UDP Top 100...'; sudo nmap -Pn -n -sU --top-ports 100 -v -oA '$nmap_dir/udp_top100' '$ip'; echo '[+] UDP Done'; read"
-      tmux select-layout -t "$target_win" tiled
+      msg_info "UDP Scan requested. Prompting for sudo..."
+      msg_info '[*] Starting UDP Top 100...'
+      sudo grc nmap -Pn -n -sU --top-ports 100 -v -oA "$nmap_dir/udp_top100" "$ip"
+      msg_ok '[+] UDP Done'
   fi
 
   # --- TCP Fast Scan ---
-  echo "[*] Starting Fast TCP Scan on $ip..."
-  nmap -Pn -n -T4 --min-rate 1000 -p- -oG "$nmap_dir/all_ports.gnmap" "$ip" > /dev/null
+  msg_info "Starting Fast TCP Scan on $ip..."
+  grc nmap -Pn -n -T4 --min-rate 1000 -p- -oG "$nmap_dir/all_ports.gnmap" "$ip" > /dev/null
 
   local ports
   ports=$(cat "$nmap_dir/all_ports.gnmap" | grep "Ports:" | awk -F 'Ports: ' '{print $2}' | tr ',' '\n' | awk '/open/ {print $1}' | awk -F '/' '{print $1}' | tr '\n' ',' | sed 's/,$//')
 
   if [[ -z "$ports" ]]; then
-    echo "[!] No open TCP ports found."
+    msg_err "No open TCP ports found."
     return
   fi
 
-  echo "[+] Open TCP Ports: $ports"
+  msg_ok "Open TCP Ports: $ports"
 
   # --- TCP Deep Scan ---
-  echo "[*] Starting Version/Script Scan on active ports..."
-  nmap -Pn -n -sC -sV -v -p "$ports" -oA "$nmap_dir/detailed" "$ip"
+  msg_info "Starting Version/Script Scan on active ports..."
+  grc nmap -Pn -n -sC -sV -v -p "$ports" -oA "$nmap_dir/detailed" "$ip"
 
   local target_url="http://$ip"
   local redirect_url=""
@@ -397,10 +398,10 @@ scan_target() {
       local clean_host="${redirect_url#*://}"
       local hostname="${clean_host%%:*}"
 
-      echo "[!] Detected redirect to URL: $redirect_url"
+      msg_info "Detected redirect to URL: $redirect_url"
       read -p "[?] Add $ip $hostname to /etc/hosts? [Y/n] " -r ans
       if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
-          host_add "$ip" "$hostname"
+          add_host_entry "$ip" "$hostname"
           target_url="$redirect_url"
       fi
   fi
@@ -408,36 +409,36 @@ scan_target() {
   # --- Prompt Actions ---
 
   # Web Check
-  if [[ ",$ports," =~ ,(80|443|8080|8000|3000|5000), ]]; then
-      echo "[+] Web detected!"
+  if [[ ",$ports," =~ ,(80|443), ]]; then
+      msg_ok "Web detected!"
       read -p "[?] Run wafw00f to check for firewalls? [Y/n] " -r ans
       if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
-          echo "[*] Running wafw00f..."
-          wafw00f "$target_url" || echo "[!] wafw00f failed or not installed"
+          msg_info "Running wafw00f..."
+          wafw00f "$target_url" || msg_err "wafw00f failed or not installed"
       fi
 
       read -p "[?] Run aggressive HTTP scans (Feroxbuster/Nuclei)? [Y/n] " -r ans
       if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
-          echo "[+] Spawning Ferox & Nuclei in 'scans' window..."
+          msg_ok "Spawning Ferox & Nuclei in 'scans' window..."
           tmux split-window -t "$target_win" -c "$proj" \
             "feroxbuster -u $target_url -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -t 50 -o $proj/logs/ferox.txt; read"
           tmux split-window -t "$target_win" -c "$proj" \
             "nuclei -u $target_url -o $proj/logs/nuclei.txt; read"
       else
-          echo "[-] Skipping HTTP scans."
+          msg_info "Skipping HTTP scans."
       fi
   fi
 
   # ---- SMB Check ----
   if [[ ",$ports," == *",445,"* ]]; then
-      echo "[+] SMB detected!"
+      msg_ok "SMB detected!"
       read -p "[?] Run Enum4linux? [Y/n] " -r ans
       if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
-          echo "[+] Spawning Enum4linux in 'scans' window..."
+          msg_ok "Spawning Enum4linux in 'scans' window..."
           tmux split-window -t "$target_win" -c "$proj" \
             "enum4linux-ng -A $ip | tee $proj/logs/smb_enum.txt; read"
       else
-          echo "[-] Skipping SMB scan."
+          msg_info "Skipping SMB scan."
       fi
   fi
 
