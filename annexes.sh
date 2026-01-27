@@ -421,9 +421,9 @@ scan_target() {
       if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
           msg_ok "Spawning Ferox & Nuclei in 'scans' window..."
           tmux split-window -t "$target_win" -c "$proj" \
-            "feroxbuster -u $target_url -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -t 50 -o $proj/logs/ferox.txt; read"
+            "feroxbuster -u $target_url -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -t 50 -o $proj/logs/ferox.txt"
           tmux split-window -t "$target_win" -c "$proj" \
-            "nuclei -u $target_url -o $proj/logs/nuclei.txt; read"
+            "nuclei -u $target_url -o $proj/logs/nuclei.txt"
       else
           msg_info "Skipping HTTP scans."
       fi
