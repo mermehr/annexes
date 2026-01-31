@@ -23,19 +23,13 @@ The script relies on the following tools to function correctly. Without them, sp
 - **Core:** `tmux`, `zip`, `python3`
 - **System:** `sudo`, `ip` (iproute2)
 - **Visual:** `flameshot`
-- **Recon:** `nmap`, `feroxbuster`, `nuclei`, `enum4linux-ng`
+- **Recon:** `grc`, `nmap`, `feroxbuster`, `nuclei`, `enum4linux-ng`
 - **Resources:** `seclists` (Expects `/usr/share/seclists` for wordlists)
 - **Editors:** `typora`
 
 ## Usage
 
-Check the script source for implementation details. The primary dispatcher handles the following:
-
-- `init / box`: Project generation
-- `link / list`: Symlink management
-- `shot`: Screenshot with automatic markdown linking
-- `tmux`: Session and layout management
-- `scan`: Automated nmap/web/smb reconnaissance
+Check the script source for implementation details.
 
 ```bash
 Usage:
@@ -60,6 +54,5 @@ Usage:
 Options:
   --force      Reuse existing directory
   --no-relink  Create project without changing ~/current
-  -u           Add top-100 UDP scan (with scan command)
+  -u           Add top-1000 UDP scan (with scan command)
 ```
-

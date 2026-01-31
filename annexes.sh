@@ -26,7 +26,6 @@ reset=$(tput sgr0)
 
 msg_ok()    { echo "${green}[+]${reset} $*" ; }
 msg_info()  { echo "${yellow}[*]${reset} $*" ; }
-msg_ques()  { echo "${blue}[*]${reset} $*" ; }
 msg_err()   { echo "${red}[!]${reset} $*" >&2 ; }
 
 # ---- Usage ----
@@ -57,7 +56,7 @@ Usage:
 Options:
   --force      Reuse existing directory
   --no-relink  Create project without changing ~/current
-  -u           Add top-100 UDP scan (with scan command)
+  -u           Add top-1000 UDP scan (with scan command)
 EOF
 }
 
@@ -204,7 +203,7 @@ open_editor() {
   require_current_project
   if command -v "$PREFERRED_EDITOR" &>/dev/null; then
     msg_ok "Opening in $PREFERRED_EDITOR..."
-    "$PREFERRED_EDITOR" "$CURRENT_PROJECT" &>/dev/null &
+    "$PREFERRED_EDITOR" "$CURRENT_LINK" &>/dev/null &
   elif command -v vnote &>/dev/null; then
     msg_ok "Opening in VNote..."
     vnote "$CURRENT_PROJECT" &>/dev/null &
@@ -246,6 +245,7 @@ launch_tmux_session() {
 
   tmux new-session -d -s "$session" -n "main" -c "$CURRENT_PROJECT"
   tmux new-window -d -t "$session:" -n "scans" -c "$CURRENT_PROJECT"
+  tmux new-window -d -t "$session:" -n "vpn" -c "~/Downloads"
   tmux select-window -t "$session:main"
 
   if [[ -n "${TMUX:-}" ]]; then
