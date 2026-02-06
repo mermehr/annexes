@@ -12,7 +12,7 @@ ARCHIVE_DIR="${BASE_DIR}/archive"
 DEFAULT_HTTP_PORT=8000
 
 SCREENSHOT_TOOL="flameshot"
-PREFERRED_EDITOR="typora"           # fallback: vnote, code, etc.
+PREFERRED_EDITOR="code"           # fallback: vnote, typora, etc.
 NMAP_BASE_OPTS="-Pn -n -v --reason --stats-every 10s"
 
 mkdir -p "$BASE_DIR" "$ARCHIVE_DIR"
@@ -216,7 +216,7 @@ take_screenshot() {
   require_current_project
   command -v "$SCREENSHOT_TOOL" >/dev/null || { msg_err "$SCREENSHOT_TOOL not installed"; exit 1; }
 
-  local dir="$CURRENT_PROJECT/assets"
+  local dir="$CURRENT_PROJECT/assets/screenshots"
   mkdir -p "$dir"
   local file="$dir/$(date +%Y%m%d-%H%M%S).png"
   local rel="assets/$(basename "$file")"
@@ -245,7 +245,6 @@ launch_tmux_session() {
 
   tmux new-session -d -s "$session" -n "main" -c "$CURRENT_PROJECT"
   tmux new-window -d -t "$session:" -n "scans" -c "$CURRENT_PROJECT"
-  tmux new-window -d -t "$session:" -n "vpn" -c "~/Downloads"
   tmux select-window -t "$session:main"
 
   if [[ -n "${TMUX:-}" ]]; then
@@ -258,7 +257,7 @@ launch_tmux_session() {
 capture_pane() {
   require_current_project
   ensure_in_tmux
-  local ts=$(date +%Y%m%d-%H%M%S)
+  local ts=$(date +"%F-%H%M%S")
   local out="$CURRENT_PROJECT/logs/${ts}_pane.log"
   tmux capture-pane -p | strip_ansi > "$out"
   msg_ok "Pane captured → $out"
@@ -267,7 +266,7 @@ capture_pane() {
 capture_history() {
   require_current_project
   ensure_in_tmux
-  local ts=$(date +%Y%m%d-%H%M%S)
+  local ts=$(date +"%F-%H%M%S")
   local out="$CURRENT_PROJECT/logs/${ts}_history.log"
   tmux capture-pane -p -S - | strip_ansi > "$out"
   msg_ok "Full history captured → $out"
@@ -318,7 +317,7 @@ quick_note() {
   require_current_project
   local text="${*:-}"
   [[ -z "$text" ]] && { msg_err "Note text required"; exit 1; }
-  local ts=$(date +"%H:%M")
+  local ts=$(date +"%F %H:%M")
   echo -e "\n- **$ts**: $text" >> "$CURRENT_PROJECT/notes.md"
   msg_ok "Note added"
 }
@@ -365,13 +364,14 @@ scan_target() {
 
   # --- TCP Fast Scan ---
   msg_info "Starting Fast TCP Scan on $ip..."
-  grc nmap -Pn -n -T4 --min-rate 1000 -p- -oG "$log_dir/all_ports.gnmap" "$ip" > /dev/null
+  grc nmap -Pn -n -v --min-rate 500 --max-retries 1 -p- -oG "$log_dir/all_ports.gnmap" "$ip" > /dev/null
 
+  # Parse the ports (using the new clean logic)
   local ports
-  ports=$(cat "$log_dir/all_ports.gnmap" | grep "Ports:" | awk -F 'Ports: ' '{print $2}' | tr ',' '\n' | awk '/open/ {print $1}' | awk -F '/' '{print $1}' | tr '\n' ',' | sed 's/,$//')
+  ports=$(awk '/Ports:/ {for(i=1;i<=NF;i++) if($i~/open/) {split($i,a,"/"); out=out a[1]","}} END {sub(/,$/,"",out); print out}' "$log_dir/all_ports.gnmap")
 
   if [[ -z "$ports" ]]; then
-    msg_err "No open TCP ports found."
+    msg_err "No open TCP ports found. (Try running standard nmap manually)"
     return
   fi
 
@@ -379,7 +379,10 @@ scan_target() {
 
   # --- TCP Deep Scan ---
   msg_info "Starting Version/Script Scan on active ports..."
-  grc nmap -Pn -n -sC -sV -T4 -p "$ports" -oA "$log_dir/detailed" "$ip"
+  # Removed -T4 to let Nmap adapt to the network
+  grc nmap -Pn -n -sC -sV -p "$ports" -oA "$log_dir/detailed" "$ip"
+
+  # ... (rest of the function remains the same) ...
 
   local target_url="http://$ip"
   local redirect_url=""
