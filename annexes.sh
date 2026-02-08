@@ -12,6 +12,7 @@ ARCHIVE_DIR="${BASE_DIR}/archive"
 DEFAULT_HTTP_PORT=8000
 
 SCREENSHOT_TOOL="flameshot"
+PREFERRD_FILEMANAGER="ranger"     # change to manager of choosing: vim, mc, etc.
 PREFERRED_EDITOR="code"           # fallback: vnote, typora, etc.
 NMAP_BASE_OPTS="-Pn -n -v --reason --stats-every 10s"
 
@@ -94,6 +95,7 @@ ensure_in_tmux() {
   fi
 }
 
+# regex to strips colour codes
 strip_ansi() {
   sed -r 's/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[mGK]//g'
 }
@@ -130,7 +132,8 @@ init_generic() {
   if [[ -d "$proj" ]]; then
     (( force )) || { msg_err "$proj already exists. Use --force"; exit 1; }
   else
-    mkdir -p "$proj"/{logs,assets,tmp,loot,nmap}
+    mkdir -p "$proj"/{logs,assets,tmp,loot,files}
+    mkdir -p "$proj"/logs/{term,web,nmap}
   fi
 
   # Common structure
@@ -146,7 +149,7 @@ init_generic() {
     ensure_file "$proj/Privsec.md"        "# Privilege Escalation"
     ensure_file "$proj/Post.md"           "# Post Exploitation & Appendix"
   else
-    ensure_file "$proj/notes.md"          "## Notes - $name"
+    ensure_file "$proj/notes.md"          "# Notes"
   fi
 
   if (( norelink == 0 )); then
@@ -219,7 +222,7 @@ take_screenshot() {
   local dir="$CURRENT_PROJECT/assets/screenshots"
   mkdir -p "$dir"
   local file="$dir/$(date +%Y%m%d-%H%M%S).png"
-  local rel="assets/$(basename "$file")"
+  local rel="assets/screenshots/$(basename "$file")"
 
   "$SCREENSHOT_TOOL" gui -p "$file" || { msg_info "Flameshot canceled"; return; }
 
@@ -233,7 +236,6 @@ take_screenshot() {
 launch_tmux_session() {
   require_current_project
   local session="pentest"
-
   if tmux has-session -t "$session" 2>/dev/null; then
     if [[ -n "${TMUX:-}" ]]; then
       tmux switch-client -t "$session"
@@ -242,11 +244,18 @@ launch_tmux_session() {
     fi
     return
   fi
-
+  # Create main window and split it vert
   tmux new-session -d -s "$session" -n "main" -c "$CURRENT_PROJECT"
+  tmux split-window -v -t "$session:main"  -c "$CURRENT_PROJECT"
+ 
   tmux new-window -d -t "$session:" -n "scans" -c "$CURRENT_PROJECT"
-  tmux select-window -t "$session:main"
+  tmux split-window -v -t "$session:scans" -c "$CURRENT_PROJECT"
+ 
+  # Opens file manager in first split
+  tmux new-window -d -t "$session:" -n "openvpn" -c "$CURRENT_PROJECT" "$PREFERRD_FILEMANAGER"
+  tmux split-window -v -t "$session:openvpn" -c "$HOME/Downloads"
 
+  tmux select-window -t "$session:main"
   if [[ -n "${TMUX:-}" ]]; then
     tmux switch-client -t "$session"
   else
@@ -257,8 +266,11 @@ launch_tmux_session() {
 capture_pane() {
   require_current_project
   ensure_in_tmux
-  local ts=$(date +"%F-%H%M%S")
-  local out="$CURRENT_PROJECT/logs/${ts}_pane.log"
+  local dir="$CURRENT_PROJECT/logs/term"
+  mkdir -p "$dir"
+  local ts=$(date +"_%H%M%S")
+  read -r -p "Enter a file name: " fn
+  local out="$dir/${fn}${ts}_pane.txt"
   tmux capture-pane -p | strip_ansi > "$out"
   msg_ok "Pane captured → $out"
 }
@@ -266,14 +278,17 @@ capture_pane() {
 capture_history() {
   require_current_project
   ensure_in_tmux
+  local dir="$CURRENT_PROJECT/logs/term"
+  mkdir -p "$dir"
   local ts=$(date +"%F-%H%M%S")
-  local out="$CURRENT_PROJECT/logs/${ts}_history.log"
+  local out="$dir/${ts}_history.txt"
   tmux capture-pane -p -S - | strip_ansi > "$out"
   msg_ok "Full history captured → $out"
 }
 
 # ---- Quick Commands ----
 
+# Adds or appeneds entries to /etc/hosts
 add_host_entry() {
   if [[ $# -ne 2 ]]; then
     echo "Usage: host <ip> <hostname>"
@@ -346,8 +361,7 @@ scan_target() {
 
   local proj
   proj="$(readlink -f "$CURRENT_LINK")"
-  # local log_dir="$proj/anx_scan/$ip"
-  local log_dir="$proj/anx_scan/$ip"
+  local log_dir="$proj/logs/$ip"
   mkdir -p "$log_dir"
 
   # --- Tmux Setup ---
@@ -366,7 +380,7 @@ scan_target() {
   msg_info "Starting Fast TCP Scan on $ip..."
   grc nmap -Pn -n -v --min-rate 500 --max-retries 1 -p- -oG "$log_dir/all_ports.gnmap" "$ip" > /dev/null
 
-  # Parse the ports (using the new clean logic)
+  # Parse the ports
   local ports
   ports=$(awk '/Ports:/ {for(i=1;i<=NF;i++) if($i~/open/) {split($i,a,"/"); out=out a[1]","}} END {sub(/,$/,"",out); print out}' "$log_dir/all_ports.gnmap")
 
@@ -379,10 +393,7 @@ scan_target() {
 
   # --- TCP Deep Scan ---
   msg_info "Starting Version/Script Scan on active ports..."
-  # Removed -T4 to let Nmap adapt to the network
   grc nmap -Pn -n -sC -sV -p "$ports" -oA "$log_dir/detailed" "$ip"
-
-  # ... (rest of the function remains the same) ...
 
   local target_url="http://$ip"
   local redirect_url=""
@@ -445,7 +456,7 @@ scan_target() {
       sudo grc nmap -Pn -sU --top-ports 1000 -v -oA "$log_dir/udp_top1000" "$ip"
       msg_ok '[+] UDP Done'
   fi
-
+  # Uncomment below to focus on scans
   # tmux select-layout -t "$target_win" tiled
 }
 
