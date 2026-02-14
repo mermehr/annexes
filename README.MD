@@ -8,7 +8,10 @@ This is not a general purpose tool. It is hardcoded to my specific file structur
 
 The script acts as a central manager for engagement/project directories. It handles:
 
-- **Project Management:** Creates consistent directory structures (logs, loot, assets) and manages a `~/current` symlink for quick navigation.
+- **Project Management:** 
+  - Creates base projects directory under `$HOME/Documents/projects`.
+  - Creates consistent directory structures (logs, loot, assets) and manages a `~/current` symlink for quick navigation.
+  - Extracts `template.zip` (if exists) from base directory into new project.
 - **Tmux Integration:** Automates session creation, window layouts, and capturing pane history to log files.
 - **Pentest Automation:** Wrappers for standard tasks like IP logging, file serving, and triggered scanning (nmap, nuclei, feroxbuster).
 
@@ -25,7 +28,7 @@ The script relies on the following tools to function correctly. Without them, sp
 - **Visual:** `flameshot`
 - **Recon:** `grc`, `nmap`, `feroxbuster`, `nuclei`, `enum4linux-ng`
 - **Resources:** `seclists` (Expects `/usr/share/seclists` for wordlists)
-- **Editors:** `typora`
+- **Editors:** `vscode`
 
 ## Usage
 
@@ -34,7 +37,6 @@ Check the script source for implementation details.
 ```bash
 Usage:
   init [--force] [--no-relink] <name>     Create standard project
-  ctf  [--force] [--no-relink] <name>     Create CTF-style project
   link <name>                             Link existing project to ~/current
   list                                    List projects (* = current)
   edit                                    Open current project in editor
@@ -48,11 +50,11 @@ Usage:
   tmux                                    Launch pre-configured tmux layout
   cap                                     Save visible pane to logs/
   hist                                    Save full scrollback to logs/
-  scan [-u] <ip>                          Deep nmap + smart follow-ups
+  scan [--udp] <ip>                       Deep nmap + smart follow-ups
   rdp <ip> <user> <pass>                  Quick xfreerdp with dynamic res
 
 Options:
   --force      Reuse existing directory
   --no-relink  Create project without changing ~/current
-  -u           Add top-1000 UDP scan (with scan command)
+  --udp [-u]   Add top-1000 UDP scan (with scan command)
 ```
