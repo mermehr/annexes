@@ -37,7 +37,6 @@ Personal Project / CTF / Pentest Manager
 
 Usage:
   init [--force] [--no-relink] <name>     Create standard project
-  ctf  [--force] [--no-relink] <name>     Create CTF-style project
   link <name>                             Link existing project to ~/current
   list                                    List projects (* = current)
   edit                                    Open current project in editor
@@ -51,13 +50,13 @@ Usage:
   tmux                                    Launch pre-configured tmux layout
   cap                                     Save visible pane to logs/
   hist                                    Save full scrollback to logs/
-  scan [-u] <ip>                          Deep nmap + smart follow-ups
+  scan [--udp] <ip>                       Deep nmap + smart follow-ups
   rdp <ip> <user> <pass>                  Quick xfreerdp with dynamic res
 
 Options:
   --force      Reuse existing directory
   --no-relink  Create project without changing ~/current
-  -u           Add top-1000 UDP scan (with scan command)
+  --udp [-u]   Add top-1000 UDP scan (with scan command)
 EOF
 }
 
@@ -113,8 +112,9 @@ get_vpn_ip() {
 # ---- Project Management ----
 
 init_generic() {
-  local mode="$1" ; shift   # "standard" or "ctf"
+  local mode="$1" ; shift
   local force=0 norelink=0 name=""
+  base_zip="$BASE_DIR/template.zip"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -132,24 +132,17 @@ init_generic() {
   if [[ -d "$proj" ]]; then
     (( force )) || { msg_err "$proj already exists. Use --force"; exit 1; }
   else
-    mkdir -p "$proj"/{logs,assets,tmp,loot,files}
-    mkdir -p "$proj"/logs/{term,web,nmap}
+    mkdir -p "$proj"
   fi
 
-  # Common structure
-  ensure_file "$proj/scope.txt"
-  ensure_file "$proj/logs/commands.log"
-
-  if [[ "$mode" == "ctf" ]]; then
-    ensure_file "$proj/notes.md"          "# Notes"
-    ensure_file "$proj/Overview.md"       "# Overview"
-    ensure_file "$proj/Enum.md"           "# Enumeration"
-    ensure_file "$proj/Services.md"       "# Service Discovery"
-    ensure_file "$proj/Foothold.md"       "# Foothold"
-    ensure_file "$proj/Privsec.md"        "# Privilege Escalation"
-    ensure_file "$proj/Post.md"           "# Post Exploitation & Appendix"
+  if [[ -f "$base_zip" ]]; then
+    msg_info "Extracting base template from $base_zip..."
+    unzip -q -o "$base_zip" -d "$proj"
   else
-    ensure_file "$proj/notes.md"          "# Notes"
+    msg_err "Base template not found, falling back to standard structure."
+    mkdir -p "$proj"/{logs/{term,nmap},assets,tmp,loot,files}
+    ensure_file "$proj/scope.txt"
+    ensure_file "$proj/notes.md" "# Notes"
   fi
 
   if (( norelink == 0 )); then
@@ -161,7 +154,6 @@ init_generic() {
 }
 
 init_project()  { init_generic "standard" "$@"; }
-init_ctf()      { init_generic "ctf"     "$@"; }
 
 link_project() {
   local name="${1:-}"
@@ -192,7 +184,7 @@ archive_project() {
   local zipfile="$ARCHIVE_DIR/${name}_${ts}.zip"
 
   msg_info "Creating archive → $zipfile"
-  if (cd "$BASE_DIR" && zip -r -q "$zipfile" "$name"); then
+  if (cd "$BASE_DIR" && zip -r -q "$zipfile" "$name" -x "*tmp*"); then
     msg_ok "Archive created: $zipfile"
   else
     msg_err "Zip failed – aborting"
@@ -207,8 +199,8 @@ open_editor() {
   if command -v "$PREFERRED_EDITOR" &>/dev/null; then
     msg_ok "Opening in $PREFERRED_EDITOR..."
     "$PREFERRED_EDITOR" "$CURRENT_LINK" &>/dev/null &
-  elif command -v vnote &>/dev/null; then
-    msg_ok "Opening in VNote..."
+  elif command -v typora &>/dev/null; then
+    msg_ok "Opening in Typora..."
     vnote "$CURRENT_PROJECT" &>/dev/null &
   else
     msg_err "No supported GUI editor found"
@@ -268,9 +260,8 @@ capture_pane() {
   ensure_in_tmux
   local dir="$CURRENT_PROJECT/logs/term"
   mkdir -p "$dir"
-  local ts=$(date +"_%H%M%S")
-  read -r -p "Enter a file name: " fn
-  local out="$dir/${fn}${ts}_pane.txt"
+  local ts=$(date +"%F-%H%M%S")
+  local out="$dir/${ts}_pane.txt"
   tmux capture-pane -p | strip_ansi > "$out"
   msg_ok "Pane captured → $out"
 }
@@ -338,9 +329,10 @@ quick_note() {
 }
 
 quick_rdp() {
+  require_current_project
   command -v xfreerdp3 >/dev/null 2>&1 || { msg_err "xfreerdp not found"; exit 1; }
   [[ $# -ne 3 ]] && { echo "Usage: rdp <ip> <user> <pass>"; exit 1; }
-  xfreerdp3 /v:"$1" /u:"$2" /p:"$3" /dynamic-resolution +auto-reconnect
+  xfreerdp3 /v:"$1" /u:"$2" /p:"$3" /dynamic-resolution +auto-reconnect +clipboard /drive:share,"$CURRENT_PROJECT/tmp"
 }
 
 # --- Recon Functions ---
@@ -361,7 +353,7 @@ scan_target() {
 
   local proj
   proj="$(readlink -f "$CURRENT_LINK")"
-  local log_dir="$proj/logs/$ip"
+  local log_dir="$proj/logs/nmap"
   mkdir -p "$log_dir"
 
   # --- Tmux Setup ---
@@ -378,11 +370,11 @@ scan_target() {
 
   # --- TCP Fast Scan ---
   msg_info "Starting Fast TCP Scan on $ip..."
-  grc nmap -Pn -n -v --min-rate 500 --max-retries 1 -p- -oG "$log_dir/all_ports.gnmap" "$ip" > /dev/null
+  grc nmap -Pn -n -v --min-rate 500 --max-retries 1 -p- -oG "$log_dir/all_ports_$ip.gnmap" "$ip" > /dev/null
 
   # Parse the ports
   local ports
-  ports=$(awk '/Ports:/ {for(i=1;i<=NF;i++) if($i~/open/) {split($i,a,"/"); out=out a[1]","}} END {sub(/,$/,"",out); print out}' "$log_dir/all_ports.gnmap")
+  ports=$(awk '/Ports:/ {for(i=1;i<=NF;i++) if($i~/open/) {split($i,a,"/"); out=out a[1]","}} END {sub(/,$/,"",out); print out}' "$log_dir/all_ports_$ip.gnmap")
 
   if [[ -z "$ports" ]]; then
     msg_err "No open TCP ports found. (Try running standard nmap manually)"
@@ -393,12 +385,12 @@ scan_target() {
 
   # --- TCP Deep Scan ---
   msg_info "Starting Version/Script Scan on active ports..."
-  grc nmap -Pn -n -sC -sV -p "$ports" -oA "$log_dir/detailed" "$ip"
+  grc nmap -Pn -n -sC -sV -p "$ports" -oA "$log_dir/detailed_$ip" "$ip"
 
   local target_url="http://$ip"
   local redirect_url=""
   if [[ -f "$log_dir/detailed.nmap" ]]; then
-      redirect_url=$(grep -oP 'Did not follow redirect to \Khttps?://[^/\s]+' "$log_dir/detailed.nmap" | head -n 1 || true)
+      redirect_url=$(grep -oP 'Did not follow redirect to \Khttps?://[^/\s]+' "$log_dir/detailed_$ip.nmap" | head -n 1 || true)
   fi
 
   if [[ -n "$redirect_url" ]]; then
@@ -428,7 +420,7 @@ scan_target() {
       if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
           msg_ok "Spawning Ferox & Nuclei in 'scans' window..."
           tmux split-window -t "$target_win" -c "$proj" \
-            "feroxbuster -u $target_url -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -t 50 -o $log_dir/ferox.txt"
+            "feroxbuster -u $target_url -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -t 50 -o $log_dir/ferox_$ip.txt"
           tmux split-window -t "$target_win" -c "$proj" \
             "nuclei -u $target_url -o $log_dir/nuclei.txt"
       else
@@ -443,7 +435,7 @@ scan_target() {
       if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
           msg_ok "Spawning Enum4linux in 'scans' window..."
           tmux split-window -t "$target_win" -c "$proj" \
-            "enum4linux-ng -A $ip | tee $log_dir/smb_enum.txt"
+            "enum4linux-ng -A $ip | tee $log_dir/smb_enum_$ip.txt"
       else
           msg_info "Skipping SMB scan."
       fi
@@ -453,7 +445,7 @@ scan_target() {
   if (( udp == 1 )); then
       msg_info "UDP Scan requested. Prompting for sudo..."
       msg_info '[*] Starting UDP Top 1000...'
-      sudo grc nmap -Pn -sU --top-ports 1000 -v -oA "$log_dir/udp_top1000" "$ip"
+      sudo grc nmap -Pn -sU --top-ports 1000 -v -oA "$log_dir/udp_top1000_$ip" "$ip"
       msg_ok '[+] UDP Done'
   fi
   # Uncomment below to focus on scans
@@ -468,7 +460,6 @@ main() {
 
   case "$cmd" in
     init)     init_project  "$@" ;;
-    ctf)      init_ctf      "$@" ;;
     link)     link_project  "$@" ;;
     list)     list_projects     ;;
     edit)     open_editor       ;;
