@@ -14,7 +14,6 @@ DEFAULT_HTTP_PORT=8000
 SCREENSHOT_TOOL="flameshot"
 PREFERRD_FILEMANAGER="ranger"     # change to manager of choosing: vim, mc, etc.
 PREFERRED_EDITOR="code"           # fallback: vnote, typora, etc.
-NMAP_BASE_OPTS="-Pn -n -v --reason --stats-every 10s"
 
 mkdir -p "$BASE_DIR" "$ARCHIVE_DIR"
 
@@ -37,6 +36,7 @@ Personal Project / CTF / Pentest Manager
 
 Usage:
   init [--force] [--no-relink] <name>     Create standard project
+  pen  [--force] [--no-relink] <name>     Create pentest project (zip template)
   link <name>                             Link existing project to ~/current
   list                                    List projects (* = current)
   edit                                    Open current project in editor
@@ -135,11 +135,13 @@ init_generic() {
     mkdir -p "$proj"
   fi
 
-  if [[ -f "$base_zip" ]]; then
+  if [[ "$mode" == "pen" && -f "$base_zip" ]]; then
     msg_info "Extracting base template from $base_zip..."
     unzip -q -o "$base_zip" -d "$proj"
   else
-    msg_err "Base template not found, falling back to standard structure."
+    if [[ "$mode" == "pen" ]]; then
+      msg_err "Base template not found, falling back to standard structure."
+    fi
     mkdir -p "$proj"/{logs/{term,nmap},assets,tmp,loot,files}
     ensure_file "$proj/scope.txt"
     ensure_file "$proj/notes.md" "# Notes"
@@ -241,11 +243,6 @@ launch_tmux_session() {
   tmux split-window -v -t "$session:main"  -c "$CURRENT_PROJECT"
  
   tmux new-window -d -t "$session:" -n "scans" -c "$CURRENT_PROJECT"
-  tmux split-window -v -t "$session:scans" -c "$CURRENT_PROJECT"
- 
-  # Opens file manager in first split
-  tmux new-window -d -t "$session:" -n "openvpn" -c "$CURRENT_PROJECT" "$PREFERRD_FILEMANAGER"
-  tmux split-window -v -t "$session:openvpn" -c "$HOME/Downloads"
 
   tmux select-window -t "$session:main"
   if [[ -n "${TMUX:-}" ]]; then
@@ -292,14 +289,14 @@ add_host_entry() {
     sudo sed -i "/[[:space:]]$hostname/d" "$hosts"
   fi
 
-  if grep -q "^$ip[[:space:]]" "$hosts"; then
+  if grep -q "^${ip}[[:space:]]" "$hosts"; then
     msg_info "Appending $hostname to existing $ip line"
-    sudo sed -i "/^$ip[[:space:]]/ s/$/ $hostname/" "$hosts"
+    sudo sed -i "/^${ip}[[:space:]]/ s/$/ $hostname/" "$hosts"
   else
     msg_info "Adding new entry"
     echo "$ip $hostname" | sudo tee -a "$hosts" >/dev/null
   fi
-  grep "^$ip" "$hosts"
+  grep "^${ip}" "$hosts"
 }
 
 start_http_server() {
@@ -385,7 +382,7 @@ scan_target() {
 
   # --- TCP Deep Scan ---
   msg_info "Starting Version/Script Scan on active ports..."
-  grc nmap -Pn -n -sC -sV -p "$ports" -oA "$log_dir/detailed_$ip" "$ip"
+  grc nmap -Pn -n -sCV -v -p "$ports" -oA "$log_dir/detailed_$ip" "$ip"
 
   local target_url="http://$ip"
   local redirect_url=""
@@ -435,7 +432,7 @@ scan_target() {
       if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
           msg_ok "Spawning Enum4linux in 'scans' window..."
           tmux split-window -t "$target_win" -c "$proj" \
-            "enum4linux-ng -A $ip | tee $log_dir/smb_enum_$ip.txt"
+            enum4linux-ng -A $ip -oA "$log_dir/enum4linux_$ip.nmap"
       else
           msg_info "Skipping SMB scan."
       fi
@@ -460,6 +457,7 @@ main() {
 
   case "$cmd" in
     init)     init_project  "$@" ;;
+    pen)      init_generic "pen" "$@" ;;
     link)     link_project  "$@" ;;
     list)     list_projects     ;;
     edit)     open_editor       ;;
