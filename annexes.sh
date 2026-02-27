@@ -142,7 +142,7 @@ init_generic() {
     if [[ "$mode" == "pen" ]]; then
       msg_err "Base template not found, falling back to standard structure."
     fi
-    mkdir -p "$proj"/{logs/{term,nmap},assets,tmp,loot,files}
+    mkdir -p "$proj"/{logs/{term,nmap},assets,tmp,loot}
     ensure_file "$proj/scope.txt"
     ensure_file "$proj/notes.md" "# Notes"
   fi
@@ -350,7 +350,7 @@ scan_target() {
 
   local proj
   proj="$(readlink -f "$CURRENT_LINK")"
-  local log_dir="$proj/logs/nmap"
+  local log_dir="$proj/logs/$ip"
   mkdir -p "$log_dir"
 
   # --- Tmux Setup ---
@@ -367,11 +367,11 @@ scan_target() {
 
   # --- TCP Fast Scan ---
   msg_info "Starting Fast TCP Scan on $ip..."
-  grc nmap -Pn -n -v --min-rate 500 --max-retries 1 -p- -oG "$log_dir/all_ports_$ip.gnmap" "$ip" > /dev/null
+  grc nmap -Pn -n -v --min-rate 500 --max-retries 1 -p- -oG "$log_dir/all_ports.gnmap" "$ip" > /dev/null
 
   # Parse the ports
   local ports
-  ports=$(awk '/Ports:/ {for(i=1;i<=NF;i++) if($i~/open/) {split($i,a,"/"); out=out a[1]","}} END {sub(/,$/,"",out); print out}' "$log_dir/all_ports_$ip.gnmap")
+  ports=$(awk '/Ports:/ {for(i=1;i<=NF;i++) if($i~/open/) {split($i,a,"/"); out=out a[1]","}} END {sub(/,$/,"",out); print out}' "$log_dir/all_ports.gnmap")
 
   if [[ -z "$ports" ]]; then
     msg_err "No open TCP ports found. (Try running standard nmap manually)"
@@ -382,14 +382,15 @@ scan_target() {
 
   # --- TCP Deep Scan ---
   msg_info "Starting Version/Script Scan on active ports..."
-  grc nmap -Pn -n -sCV -v -p "$ports" -oA "$log_dir/detailed_$ip" "$ip"
+  grc nmap -Pn -n -sCV -v -p "$ports" -oA "$log_dir/detailed" "$ip"
 
   local target_url="http://$ip"
   local redirect_url=""
   if [[ -f "$log_dir/detailed.nmap" ]]; then
-      redirect_url=$(grep -oP 'Did not follow redirect to \Khttps?://[^/\s]+' "$log_dir/detailed_$ip.nmap" | head -n 1 || true)
+      redirect_url=$(grep -oP 'Did not follow redirect to \Khttps?://[^/\s]+' "$log_dir/detailed.nmap" | head -n 1 || true)
   fi
 
+  # HTTP Host Check
   if [[ -n "$redirect_url" ]]; then
       local clean_host="${redirect_url#*://}"
       local hostname="${clean_host%%:*}"
@@ -402,7 +403,25 @@ scan_target() {
       fi
   fi
 
+  # NFS Check
+  if [[ ",$ports," == *",2049,"* ]]; then
+      msg_ok "NFS detected!"
+      # Showmount -e is the bread and butter for finding exposed backups/configs
+      showmount -e "$ip" | tee "$log_dir/nfs_shares.txt"
+  fi
+
   # --- Prompt Actions ---
+
+  # SNMP Check
+  if [[ ",$ports," == *",161,"* ]]; then
+      msg_ok "SNMP detected!"
+      read -p "[?] Run onesixtyone to check for community strings? [Y/n] " -r ans
+      if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
+          msg_info "Spawning onesixtyone in 'scans' window..."      
+          tmux split-window -t "$target_win" -c "$proj" \
+          "onesixtyone -c /usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt $ip | tee $log_dir/snmp.txt; read"
+      fi
+  fi
 
   # Web Check
   if [[ ",$ports," =~ ,(80|443), ]]; then
@@ -417,9 +436,9 @@ scan_target() {
       if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
           msg_ok "Spawning Ferox & Nuclei in 'scans' window..."
           tmux split-window -t "$target_win" -c "$proj" \
-            "feroxbuster -u $target_url -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -t 50 -o $log_dir/ferox_$ip.txt"
+            "feroxbuster -u $target_url -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -t 50 -o $log_dir/ferox_$ip.txt; read"
           tmux split-window -t "$target_win" -c "$proj" \
-            "nuclei -u $target_url -o $log_dir/nuclei.txt"
+            "nuclei -u $target_url -o $log_dir/nuclei.txt; read"
       else
           msg_info "Skipping HTTP scans."
       fi
@@ -432,7 +451,7 @@ scan_target() {
       if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
           msg_ok "Spawning Enum4linux in 'scans' window..."
           tmux split-window -t "$target_win" -c "$proj" \
-            enum4linux-ng -A $ip -oA "$log_dir/enum4linux_$ip.nmap"
+            enum4linux-ng -A $ip -oA "$log_dir/enum4linux_$ip.nmap; read"
       else
           msg_info "Skipping SMB scan."
       fi
