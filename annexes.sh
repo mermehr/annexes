@@ -244,6 +244,11 @@ launch_tmux_session() {
  
   tmux new-window -d -t "$session:" -n "scans" -c "$CURRENT_PROJECT"
 
+  tmux new-window -d -t "$session:" -n "ligolo" -c "/tmp"
+  tmux split-window -v -t "$session:ligolo"  -c "$CURRENT_PROJECT"
+
+  tmux new-window -d -t "$session:" -n "vpn" -c "$HOME/Downloads"
+ 
   tmux select-window -t "$session:main"
   if [[ -n "${TMUX:-}" ]]; then
     tmux switch-client -t "$session"
@@ -367,7 +372,7 @@ scan_target() {
 
   # --- TCP Fast Scan ---
   msg_info "Starting Fast TCP Scan on $ip..."
-  grc nmap -Pn -n -v --min-rate 500 --max-retries 1 -p- -oG "$log_dir/all_ports.gnmap" "$ip" > /dev/null
+  nmap -Pn -n -v --min-rate 500 --max-retries 1 -p- -oG "$log_dir/all_ports.gnmap" "$ip" > /dev/null
 
   # Parse the ports
   local ports
@@ -382,7 +387,7 @@ scan_target() {
 
   # --- TCP Deep Scan ---
   msg_info "Starting Version/Script Scan on active ports..."
-  grc nmap -Pn -n -sCV -v -p "$ports" -oA "$log_dir/detailed" "$ip"
+  nmap -Pn -n -sCV -v -p "$ports" -oA "$log_dir/detailed" "$ip"
 
   local target_url="http://$ip"
   local redirect_url=""
@@ -461,7 +466,7 @@ scan_target() {
   if (( udp == 1 )); then
       msg_info "UDP Scan requested. Prompting for sudo..."
       msg_info '[*] Starting UDP Top 1000...'
-      sudo grc nmap -Pn -sU --top-ports 1000 -v -oA "$log_dir/udp_top1000_$ip" "$ip"
+      sudo nmap -Pn -sU --top-ports 1000 -v -oA "$log_dir/udp_top1000_$ip" "$ip"
       msg_ok '[+] UDP Done'
   fi
   # Uncomment below to focus on scans
