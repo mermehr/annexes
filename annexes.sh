@@ -334,7 +334,7 @@ quick_rdp() {
   require_current_project
   command -v xfreerdp3 >/dev/null 2>&1 || { msg_err "xfreerdp not found"; exit 1; }
   [[ $# -ne 3 ]] && { echo "Usage: rdp <ip> <user> <pass>"; exit 1; }
-  xfreerdp3 /v:"$1" /u:"$2" /p:"$3" /dynamic-resolution +auto-reconnect +clipboard /drive:share,"$CURRENT_PROJECT/tmp"
+  xfreerdp3 /v:"$1" /u:"$2" /p:"$3" /dynamic-resolution +auto-reconnect +clipboard /drive:neverlook,"$CURRENT_PROJECT/tmp"
 }
 
 # --- Recon Functions ---
@@ -363,8 +363,8 @@ scan_target() {
   sess=$(tmux display-message -p '#S')
 
   if ! tmux list-windows -t "${sess}:" | grep -q "scans"; then
-      tmux new-window -t "${sess}:" -n "scans" -c "$proj"
-      msg_ok "Created 'scans' window for background tasks."
+    tmux new-window -t "${sess}:" -n "scans" -c "$proj"
+    msg_ok "Created 'scans' window for background tasks."
   fi
 
   # Target the 'scans' window explicitly
@@ -392,20 +392,20 @@ scan_target() {
   local target_url="http://$ip"
   local redirect_url=""
   if [[ -f "$log_dir/detailed.nmap" ]]; then
-      redirect_url=$(grep -oP 'Did not follow redirect to \Khttps?://[^/\s]+' "$log_dir/detailed.nmap" | head -n 1 || true)
+    redirect_url=$(grep -oP 'Did not follow redirect to \Khttps?://[^/\s]+' "$log_dir/detailed.nmap" | head -n 1 || true)
   fi
 
   # HTTP Host Check
   if [[ -n "$redirect_url" ]]; then
-      local clean_host="${redirect_url#*://}"
-      local hostname="${clean_host%%:*}"
+    local clean_host="${redirect_url#*://}"
+    local hostname="${clean_host%%:*}"
 
-      msg_info "Detected redirect to URL: $redirect_url"
-      read -p "[?] Add $ip $hostname to /etc/hosts? [Y/n] " -r ans
-      if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
-          add_host_entry "$ip" "$hostname"
-          target_url="$redirect_url"
-      fi
+    msg_info "Detected redirect to URL: $redirect_url"
+    read -p "[?] Add $ip $hostname to /etc/hosts? [Y/n] " -r ans
+    if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
+      add_host_entry "$ip" "$hostname"
+      target_url="$redirect_url"
+    fi
   fi
 
   # NFS Check
@@ -422,52 +422,53 @@ scan_target() {
       msg_ok "SNMP detected!"
       read -p "[?] Run onesixtyone to check for community strings? [Y/n] " -r ans
       if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
-          msg_info "Spawning onesixtyone in 'scans' window..."      
-          tmux split-window -t "$target_win" -c "$proj" \
-          "onesixtyone -c /usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt $ip | tee $log_dir/snmp.txt; read"
+        msg_info "Spawning onesixtyone in 'scans' window..."      
+        tmux split-window -t "$target_win" -c "$proj" \
+        "onesixtyone -c /usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt $ip | tee $log_dir/snmp.txt"
       fi
   fi
 
   # Web Check
   if [[ ",$ports," =~ ,(80|443), ]]; then
-      msg_ok "Web detected!"
-      read -p "[?] Run wafw00f to check for firewalls? [Y/n] " -r ans
-      if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
-          msg_info "Running wafw00f..."
-          wafw00f "$target_url" || msg_err "wafw00f failed or not installed"
-      fi
+    msg_ok "Web detected!"
+    read -p "[?] Run wafw00f to check for firewalls? [Y/n] " -r ans
+    if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
+      msg_info "Running wafw00f..."
+      wafw00f "$target_url" || msg_err "wafw00f failed or not installed"
+    fi
 
-      read -p "[?] Run aggressive HTTP scans (Feroxbuster/Nuclei)? [Y/n] " -r ans
-      if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
-          msg_ok "Spawning Ferox & Nuclei in 'scans' window..."
-          tmux split-window -t "$target_win" -c "$proj" \
-            "feroxbuster -u $target_url -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -t 50 -o $log_dir/ferox_$ip.txt; read"
-          tmux split-window -t "$target_win" -c "$proj" \
-            "nuclei -u $target_url -o $log_dir/nuclei.txt; read"
-      else
-          msg_info "Skipping HTTP scans."
-      fi
+    read -p "[?] Run aggressive HTTP scans (Feroxbuster/Wapiti)? [Y/n] " -r ans
+    if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
+      msg_ok "Spawning Ferox & Nuclei in 'scans' window..."
+      
+      tmux split-window -t "$target_win" -c "$proj" \
+        "feroxbuster -u http://$ip --rate-limit 15 -t 10 -o $log_dir/ferox_$ip.txt; read"
+
+      tmux split-window -t "$target_win" -c "$proj" \
+        "wapiti -u $target_url -f txt -o $log_dir/wapiti.txt; read"
+    else
+      msg_info "Skipping HTTP scans."
+    fi
   fi
 
-  # ---- SMB Check ----
-  if [[ ",$ports," == *",445,"* ]]; then
-      msg_ok "SMB detected!"
-      read -p "[?] Run Enum4linux? [Y/n] " -r ans
-      if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
-          msg_ok "Spawning Enum4linux in 'scans' window..."
-          tmux split-window -t "$target_win" -c "$proj" \
-            enum4linux-ng -A $ip -oA "$log_dir/enum4linux_$ip.nmap; read"
-      else
-          msg_info "Skipping SMB scan."
-      fi
+  # SMB Check
+  if [[ ",$ports," == *",445,"* ]] && grep -qi "microsoft-ds" "$log_dir/detailed.nmap"; then
+    msg_ok "Windows SMB (microsoft-ds) detected!"
+    read -p "[?] Run Enum4linux-ng? [Y/n] " -r ans
+    if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
+      tmux split-window -t "$target_win" -c "$proj" \
+        "enum4linux-ng -A $ip -oA \"$log_dir/enum4linux_$ip\"; read"
+    fi
+  elif [[ ",$ports," == *",445,"* ]]; then
+    msg_info "SMB detected but banner does not match 'microsoft-ds'. Likely Linux/Samba."
   fi
   
-  # --- UDP Scan ---
+  # UDP Scan
   if (( udp == 1 )); then
-      msg_info "UDP Scan requested. Prompting for sudo..."
-      msg_info '[*] Starting UDP Top 1000...'
-      sudo nmap -Pn -sU --top-ports 1000 -v -oA "$log_dir/udp_top1000_$ip" "$ip"
-      msg_ok '[+] UDP Done'
+    msg_info "UDP Scan requested. Prompting for sudo..."
+    msg_info '[*] Starting UDP Top 1000...'
+    sudo nmap -Pn -sU --top-ports 1000 -v -oA "$log_dir/udp_top1000_$ip" "$ip"
+    msg_ok '[+] UDP Done'
   fi
   # Uncomment below to focus on scans
   # tmux select-layout -t "$target_win" tiled
