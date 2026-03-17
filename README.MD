@@ -26,7 +26,7 @@ The script relies on the following tools to function correctly. Without them, sp
 - **Core:** `tmux`, `zip`, `python3`
 - **System:** `sudo`, `ip` (iproute2)
 - **Visual:** `flameshot`
-- **Recon:** `nmap`, `feroxbuster`, `nuclei`, `enum4linux-ng`, `onesixtyone`, 
+- **Recon:** `nmap`, `feroxbuster`, `wapiti`, `enum4linux-ng`, `onesixtyone`, 
 - **Resources:** `seclists` (Expects `/usr/share/seclists` for wordlists)
 - **Editors:** `vscode`
 
