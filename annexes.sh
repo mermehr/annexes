@@ -51,6 +51,7 @@ Usage:
   cap                                     Save visible pane to logs/
   hist                                    Save full scrollback to logs/
   scan [--udp] <ip>                       Deep nmap + smart follow-ups
+  sync <ip>                               Sync time to DC, otherwise set-ntp true
   rdp <ip> <user> <pass>                  Quick xfreerdp with dynamic res
 
 Options:
@@ -244,7 +245,7 @@ launch_tmux_session() {
  
   tmux new-window -d -t "$session:" -n "scans" -c "$CURRENT_PROJECT"
 
-  tmux new-window -d -t "$session:" -n "ligolo" -c "/tmp"
+  tmux new-window -d -t "$session:" -n "ligolo" -c "$HOME/.ligolo"
   tmux split-window -v -t "$session:ligolo"  -c "$CURRENT_PROJECT"
 
   tmux new-window -d -t "$session:" -n "vpn" -c "$HOME/Downloads"
@@ -262,8 +263,9 @@ capture_pane() {
   ensure_in_tmux
   local dir="$CURRENT_PROJECT/logs/term"
   mkdir -p "$dir"
-  local ts=$(date +"%F-%H%M%S")
-  local out="$dir/${ts}_pane.txt"
+  local ts=$(date +"-%F")
+  read -r -p "Enter a file name: " fn
+  local out="$dir/${fn}${ts}_pane.txt"
   tmux capture-pane -p | strip_ansi > "$out"
   msg_ok "Pane captured → $out"
 }
@@ -335,6 +337,19 @@ quick_rdp() {
   command -v xfreerdp3 >/dev/null 2>&1 || { msg_err "xfreerdp not found"; exit 1; }
   [[ $# -ne 3 ]] && { echo "Usage: rdp <ip> <user> <pass>"; exit 1; }
   xfreerdp3 /v:"$1" /u:"$2" /p:"$3" /dynamic-resolution +auto-reconnect +clipboard /drive:neverlook,"$CURRENT_PROJECT/tmp"
+}
+
+sync_time() {
+  require_current_project
+  if [[ $# -ne 1 ]]; then
+    sudo timedatectl set-ntp true
+    { msg_info "DC IP required - Syncing to local"; exit 1; }
+    return 1
+  else
+    local dcip="$1"
+    sudo timedatectl set-ntp false; sudo ntpdate -u "$dcip"
+    msg_ok "Time synced to $dcip"
+  fi
 }
 
 # --- Recon Functions ---
@@ -498,6 +513,7 @@ main() {
     hist)     capture_history   ;;
     rdp)      quick_rdp     "$@" ;;
     scan)     scan_target "$@" ;;
+    sync)     sync_time "$@" ;;
     -h|--help|"") usage ;;
     *) msg_err "Unknown command: $cmd"; usage; exit 1 ;;
   esac
