@@ -8,7 +8,7 @@ This is not a general purpose tool. It is hardcoded to my specific file structur
 
 The script acts as a central manager for engagement/project directories. It handles:
 
-- **Project Management:** 
+- **Project Management:**
   - Creates base projects directory under `$HOME/Documents/projects`.
   - Creates consistent directory structures (logs, loot, assets) and manages a `~/current` symlink for quick navigation.
   - Extracts `template.zip` (if exists) from base directory into new project.
@@ -51,6 +51,7 @@ Usage:
   cap                                     Save visible pane to logs/
   hist                                    Save full scrollback to logs/
   scan [--udp] <ip>                       Deep nmap + smart follow-ups
+  sync                                    Sync time to DC, otherwise set-ntp true 
   rdp <ip> <user> <pass>                  Quick xfreerdp with dynamic res
 
 Options:
