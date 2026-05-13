@@ -187,7 +187,7 @@ archive_project() {
   local zipfile="$ARCHIVE_DIR/${name}_${ts}.zip"
 
   msg_info "Creating archive → $zipfile"
-  if (cd "$BASE_DIR" && zip -r -q "$zipfile" "$name" -x "*tmp*"); then
+  if (cd "$BASE_DIR" && zip -s 20m -r -q "$zipfile" "$name" -x "*tmp*"); then
     msg_ok "Archive created: $zipfile"
   else
     msg_err "Zip failed – aborting"
