@@ -5,7 +5,7 @@ set -euo pipefail
 
 # ---- Config ----
 
-BASE_DIR="${HOME}/Documents/projects"
+BASE_DIR="/opt/anx/projects"
 CURRENT_LINK="${HOME}/current"
 VPN_INTERFACE="tun0"
 ARCHIVE_DIR="${BASE_DIR}/archive"
@@ -244,9 +244,6 @@ launch_tmux_session() {
   tmux split-window -v -t "$session:main"  -c "$CURRENT_PROJECT"
  
   tmux new-window -d -t "$session:" -n "scans" -c "$CURRENT_PROJECT"
-
-  tmux new-window -d -t "$session:" -n "ligolo" -c "$HOME/.ligolo"
-  tmux split-window -v -t "$session:ligolo"  -c "$CURRENT_PROJECT"
 
   tmux new-window -d -t "$session:" -n "vpn" -c "$HOME/Downloads"
  
