@@ -50,7 +50,7 @@ Usage:
   tmux                                    Launch pre-configured tmux layout
   cap                                     Save visible pane to logs/
   hist                                    Save full scrollback to logs/
-  scan [--udp] <ip>                       Deep nmap + smart follow-ups
+  scan [--udp] <ip> [name]                Deep nmap + smart follow-ups
   sync <ip>                               Sync time to DC, otherwise set-ntp true
   rdp <ip> <user> <pass>                  Quick xfreerdp with dynamic res
 
@@ -355,19 +355,28 @@ scan_target() {
   require_current_project
   local udp=0
   local ip=""
+  local log_name=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -u|--udp) udp=1; shift ;;
-      *) ip="$1"; shift ;;
+      *)
+        if [[ -z "$ip" ]]; then
+          ip="$1"
+        else
+          log_name="$1"
+        fi
+        shift
+        ;;
     esac
   done
 
   [[ -z "$ip" ]] && { msg_err "Target IP required"; exit 1; }
+  [[ -z "$log_name" ]] && log_name="$ip"
 
   local proj
   proj="$(readlink -f "$CURRENT_LINK")"
-  local log_dir="$proj/logs/$ip"
+  local log_dir="$proj/logs/$log_name"
   mkdir -p "$log_dir"
 
   # --- Tmux Setup ---
