@@ -37,6 +37,7 @@ Check the script source for implementation details.
 ```bash
 Usage:
   init [--force] [--no-relink] <name>     Create standard project
+  pen  [--force] [--no-relink] <name>     Create pentest project (zip template)
   link <name>                             Link existing project to ~/current
   list                                    List projects (* = current)
   edit                                    Open current project in editor
@@ -50,8 +51,8 @@ Usage:
   tmux                                    Launch pre-configured tmux layout
   cap                                     Save visible pane to logs/
   hist                                    Save full scrollback to logs/
-  scan [--udp] <ip>                       Deep nmap + smart follow-ups
-  sync                                    Sync time to DC, otherwise set-ntp true 
+  scan [--udp] <ip> [name]                Deep nmap + smart follow-ups
+  sync <ip>                               Sync time to DC, otherwise set-ntp true
   rdp <ip> <user> <pass>                  Quick xfreerdp with dynamic res
 
 Options:
