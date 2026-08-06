@@ -245,6 +245,9 @@ launch_tmux_session() {
  
   tmux new-window -d -t "$session:" -n "scans" -c "$CURRENT_PROJECT"
 
+  tmux new-window -d -t "$session:" -n "proxy" -c "/tmp"
+  tmux split-window -v -t "$session:proxy"  -c "$CURRENT_PROJECT/tmp"
+
   tmux new-window -d -t "$session:" -n "vpn" -c "$HOME/Downloads"
  
   tmux select-window -t "$session:main"
@@ -393,7 +396,7 @@ scan_target() {
 
   # --- TCP Fast Scan ---
   msg_info "Starting Fast TCP Scan on $ip..."
-  nmap -Pn -n -v --min-rate 500 --max-retries 1 -p- -oG "$log_dir/all_ports.gnmap" "$ip" > /dev/null
+  nmap -Pn -n -v --min-rate 500 --max-retries 1 -p- -oG "$log_dir/all_ports.gnmap" "$ip" # > /dev/null
 
   # Parse the ports
   local ports
