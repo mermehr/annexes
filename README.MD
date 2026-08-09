@@ -26,9 +26,10 @@ The script relies on the following tools to function correctly. Without them, sp
 - **Core:** `tmux`, `zip`, `python3`
 - **System:** `sudo`, `ip` (iproute2)
 - **Visual:** `flameshot`
-- **Recon:** `nmap`, `feroxbuster`, `wapiti`, `enum4linux-ng`, `onesixtyone`, 
+- **Recon:** `nmap`, `feroxbuster`, `nikto`, `enum4linux-ng`, `onesixtyone`
 - **Resources:** `seclists` (Expects `/usr/share/seclists` for wordlists)
-- **Editors:** `vscode`
+- **Editors:** `vscode` (fallback: `typora`, `vnote`)
+- **Shells:** `msfvenom`
 
 ## Usage
 
@@ -54,9 +55,11 @@ Usage:
   scan [--udp] <ip> [name]                Deep nmap + smart follow-ups
   sync <ip>                               Sync time to DC, otherwise set-ntp true
   rdp <ip> <user> <pass>                  Quick xfreerdp with dynamic res
+  rev <type> [lhost] <port>               Generate reverse shell / payload string
+  rev list                                List available shells, payloads and options
 
 Options:
   --force      Reuse existing directory
   --no-relink  Create project without changing ~/current
-  --udp [-u]   Add top-1000 UDP scan (with scan command)
+  --udp [-u]   Add top-100 UDP scan (with scan command)
 ```
