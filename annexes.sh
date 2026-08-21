@@ -122,6 +122,7 @@ run_cmd() {
 init_generic() {
   local mode="$1" ; shift
   local force=0 norelink=0 name=""
+  # Location of template if 'pen'
   base_zip="$BASE_DIR/template.zip"
 
   while [[ $# -gt 0 ]]; do
@@ -143,10 +144,12 @@ init_generic() {
     mkdir -p "$proj"
   fi
 
+  # Extract template into project dir
   if [[ "$mode" == "pen" && -f "$base_zip" ]]; then
     msg_info "Extracting base template from $base_zip..."
     unzip -q -o "$base_zip" -d "$proj"
   else
+    # Structure a generic project
     if [[ "$mode" == "pen" ]]; then
       msg_err "Base template not found, falling back to standard structure."
     fi
@@ -194,7 +197,7 @@ archive_project() {
   local zipfile="$ARCHIVE_DIR/${name}_${ts}.zip"
 
   msg_info "Creating archive → $zipfile"
-  if (cd "$BASE_DIR" && zip -s 20m -r -q "$zipfile" "$name" -x "*tmp*"); then
+  if (cd "$BASE_DIR" && zip -s 20m -r -q "$zipfile" "$name" -x "*tmp*" "*.obsidian*" "*.trash*"); then
     msg_ok "Archive created: $zipfile"
   else
     msg_err "Zip failed – aborting"
@@ -238,6 +241,7 @@ take_screenshot() {
 launch_tmux_session() {
   require_current_project
   local session="pentest"
+  
   if tmux has-session -t "$session" 2>/dev/null; then
     if [[ -n "${TMUX:-}" ]]; then
       tmux switch-client -t "$session"
@@ -246,7 +250,13 @@ launch_tmux_session() {
     fi
     return
   fi
-  # Create  windows and split it them
+
+  # Twrm log path and live pipe
+  local proj_log_dir="$CURRENT_PROJECT/logs/term"
+  mkdir -p "$proj_log_dir"
+  local pipe_cmd="pipe-pane -o 'exec cat >> ${proj_log_dir}/tmux-#W-#P-%Y%m%d-%H%M%S.log'"
+
+  # Layout logic
   tmux new-session -d -s "$session" -n "main" -c "$CURRENT_PROJECT"
   tmux split-window -v -t "$session:main"  -c "$CURRENT_PROJECT"
  
@@ -257,6 +267,21 @@ launch_tmux_session() {
 
   tmux new-window -d -t "$session:" -n "vpn" -c "$HOME/Downloads"
  
+  # Pipe hook for new splits
+  tmux set-hook -t "$session" -g after-split-window "$pipe_cmd"
+
+  # Punch pip into layout windows
+  tmux list-panes -a -t "$session" -F '#{session_name}:#{window_index}.#{pane_index}' | while read -r target; do
+    local win_name
+    win_name=$(tmux display-message -t "$target" -p '#W')
+    local pane_idx
+    pane_idx=$(tmux display-message -t "$target" -p '#P')
+    local ts
+    ts=$(date +%Y%m%d-%H%M%S)
+    
+    tmux pipe-pane -t "$target" -o "exec cat >> ${proj_log_dir}/tmux-${win_name}-${pane_idx}-${ts}.log"
+  done
+
   tmux select-window -t "$session:main"
   if [[ -n "${TMUX:-}" ]]; then
     tmux switch-client -t "$session"
@@ -265,6 +290,7 @@ launch_tmux_session() {
   fi
 }
 
+# Stripped snapshot of visable pane
 capture_pane() {
   require_current_project
   ensure_in_tmux
@@ -277,6 +303,7 @@ capture_pane() {
   msg_ok "Pane captured → $out"
 }
 
+# Stripped scroll-back
 capture_history() {
   require_current_project
   ensure_in_tmux
@@ -313,6 +340,7 @@ add_host_entry() {
   grep "^${ip}" "$hosts"
 }
 
+# Python http server ./tmp
 start_http_server() {
   require_current_project
   local port="${1:-$DEFAULT_HTTP_PORT}"
@@ -322,6 +350,7 @@ start_http_server() {
   (cd "$srv_dir" && run_cmd python3 -m http.server "$port")
 }
 
+# Add entries to ./scopetxt 
 add_scope_item() {
   require_current_project
   local item="${1:-}"
@@ -330,6 +359,7 @@ add_scope_item() {
   msg_ok "Added to scope.txt → $item"
 }
 
+# Add markdown entrie to ./notes.md
 quick_note() {
   require_current_project
   local text="${*:-}"
@@ -339,6 +369,7 @@ quick_note() {
   msg_ok "Note added"
 }
 
+# Quick xfreerdp with sides
 quick_rdp() {
   require_current_project
   command -v xfreerdp3 >/dev/null 2>&1 || { msg_err "xfreerdp not found"; exit 1; }
@@ -346,6 +377,7 @@ quick_rdp() {
   run_cmd xfreerdp3 /v:"$1" /u:"$2" /p:"$3" /dynamic-resolution +auto-reconnect +clipboard /drive:neverlook,"$CURRENT_PROJECT/tmp"
 }
 
+# Disable ntp and sync to server or back to ntp 
 sync_time() {
   require_current_project
   if [[ $# -ne 1 ]]; then
@@ -403,7 +435,7 @@ scan_target() {
 
   # --- TCP Fast Scan ---
   msg_info "Starting Fast TCP Scan on $ip..."
-  run_cmd nmap -Pn -vvv --min-rate 500 --max-retries 1 -p- -oG "$log_dir/all_ports.gnmap" "$ip" # > /dev/null
+  run_cmd nmap -Pn -v --min-rate 500 --max-retries 1 -p- -oG "$log_dir/all_ports.gnmap" "$ip" # > /dev/null
 
   # Parse the ports
   local ports
@@ -502,7 +534,7 @@ scan_target() {
   if (( udp == 1 )); then
     msg_info "UDP Scan requested. Prompting for sudo..."
     msg_info '[*] Starting UDP Top 100...'
-    run_cmd sudo nmap -Pn -sU --top-ports 100 -v -oA "$log_dir/udp_top1000_$ip" "$ip"
+    run_cmd sudo nmap -v -Pn -sU --top-ports 1000 -v -oA "$log_dir/udp_top1000_$ip" "$ip"
     msg_ok '[+] UDP Done'
   fi
 }
@@ -514,7 +546,7 @@ generate_payload() {
   shift || true
 
 
-  # If type is 'list' or empty, show help
+  # If type is 'list' or empty, show some help
   if [[ -z "$type" || "$type" == "list" || "$type" == "-h" || "$type" == "--help" ]]; then
     cat <<EOF
 Payload Generator Usage:
