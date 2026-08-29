@@ -251,37 +251,18 @@ launch_tmux_session() {
     return
   fi
 
-  # Twrm log path and live pipe
-  local proj_log_dir="$CURRENT_PROJECT/logs/term"
-  mkdir -p "$proj_log_dir"
-  local pipe_cmd="pipe-pane -o 'exec cat >> ${proj_log_dir}/tmux-#W-#P-%Y%m%d-%H%M%S.log'"
-
-  # Layout logic
+    # Layout logic
   tmux new-session -d -s "$session" -n "main" -c "$CURRENT_PROJECT"
   tmux split-window -v -t "$session:main"  -c "$CURRENT_PROJECT"
  
   tmux new-window -d -t "$session:" -n "scans" -c "$CURRENT_PROJECT"
+  tmux split-window -v -t "$session:scans"  -c "$CURRENT_PROJECT"
 
   tmux new-window -d -t "$session:" -n "proxy" -c "/tmp"
   tmux split-window -v -t "$session:proxy"  -c "$CURRENT_PROJECT/tmp"
 
   tmux new-window -d -t "$session:" -n "vpn" -c "$HOME/Downloads"
  
-  # Pipe hook for new splits
-  tmux set-hook -t "$session" -g after-split-window "$pipe_cmd"
-
-  # Punch pip into layout windows
-  tmux list-panes -a -t "$session" -F '#{session_name}:#{window_index}.#{pane_index}' | while read -r target; do
-    local win_name
-    win_name=$(tmux display-message -t "$target" -p '#W')
-    local pane_idx
-    pane_idx=$(tmux display-message -t "$target" -p '#P')
-    local ts
-    ts=$(date +%Y%m%d-%H%M%S)
-    
-    tmux pipe-pane -t "$target" -o "exec cat >> ${proj_log_dir}/tmux-${win_name}-${pane_idx}-${ts}.log"
-  done
-
   tmux select-window -t "$session:main"
   if [[ -n "${TMUX:-}" ]]; then
     tmux switch-client -t "$session"
