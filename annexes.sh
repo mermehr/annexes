@@ -451,7 +451,7 @@ scan_target() {
   fi
 
   # SMB Check
-  if [[ ",$ports," == *",445,"* ]] && grep -qi "microsoft-ds" "$log_dir/detailed.nmap"; then
+  if [[ ",$ports," == *",445,"* ]] && grep -qi "microsoft-ds" "$log_dir/$log_name.nmap"; then
     msg_ok "Windows SMB (microsoft-ds) detected!"
     read -p "[?] Run Enum4linux-ng? [Y/n] " -r ans
     if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
@@ -462,7 +462,11 @@ scan_target() {
   fi
 
   # Web Check
-  if [[ ",$ports," =~ ,(80|443), ]]; then
+  if [[ ",$ports," =~ ,(80), ]]; then
+    msg_ok "Web detected!"
+    run_web_enum "$target_url"
+  elif [[ ",$ports," =~ ,(443), ]]; then
+    local target_url="https://$ip"
     msg_ok "Web detected!"
     run_web_enum "$target_url"
   fi
@@ -471,7 +475,7 @@ scan_target() {
   if (( udp == 1 )); then
     msg_info "UDP Scan requested. Prompting for sudo..."
     msg_info '[*] Starting UDP Top 100...'
-    run_cmd sudo nmap -v -Pn -sU --top-ports 100 -v -oN "$log_dir/$log_name_udp" "$ip"
+    run_cmd sudo nmap -v -Pn -sU --top-ports 100 -v -oN "$log_dir/""$log_name""_udp" "$ip"
     msg_ok '[+] UDP Done'
   fi
 }
@@ -479,7 +483,7 @@ scan_target() {
 run_web_enum() {
   require_current_project
   local target=""
-  local run_all=0 run_whatweb=0 run_waf=0 run_nikto=0 run_ferox=0
+  local run_all=0 run_whatweb=0 run_waf=0 run_ferox=0
   local explicit_tools=0
 
   # Parse arguments safely
@@ -488,10 +492,9 @@ run_web_enum() {
       --all)        run_all=1; shift ;;
       --whatweb)    run_whatweb=1; explicit_tools=1; shift ;;
       --wafw00f)    run_waf=1; explicit_tools=1; shift ;;
-      --nikto)      run_nikto=1; explicit_tools=1; shift ;;
       --ferox)      run_ferox=1; explicit_tools=1; shift ;;
       -h|--help)
-        echo "Usage: annexes.sh webenum <host:port|URL> [--all|--whatweb|--wafw00f|--nikto|--ferox]"
+        echo "Usage: annexes.sh webenum <host:port|URL> [--all|--whatweb|--wafw00f|--ferox]"
         return 0
         ;;
       -*)
@@ -537,11 +540,6 @@ run_web_enum() {
       run_cmd wafw00f "$target_url" || msg_err "wafw00f failed"
     fi
 
-    if (( run_all || run_nikto )); then
-      msg_info "Running nikto..."
-      run_cmd nikto -o "$log_dir/nikto.txt" --maxtime=180s -C all -h "$target_url" || msg_err "nikto failed"
-    fi
-
     if (( run_all || run_ferox )); then
       msg_info "Running feroxbuster..."
       run_cmd feroxbuster -u "$target_url" -o "$log_dir/ferox_anx.txt" || msg_err "feroxbuster failed"
@@ -562,12 +560,6 @@ run_web_enum() {
   if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
     msg_info "Running wafw00f..."
     run_cmd wafw00f "$target_url" || msg_err "wafw00f failed"
-  fi
-
-  read -p "[?] Run nikto to check for vulnerabilities? [Y/n] " -r ans
-  if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
-    msg_info "Running nikto..."
-    run_cmd nikto -o "$log_dir/nikto.txt" --maxtime=180s -C all -h "$target_url" || msg_err "nikto failed"
   fi
 
   read -p "[?] Run feroxbuster dir scan? [Y/n] " -r ans
@@ -756,7 +748,6 @@ print(f"powershell -enc {b64_encoded}")
   fi
 
   echo "$payload"
-  echo -e "\nUpgrade:\npython3 -c 'import pty; pty.spawn(\"/bin/bash\")'\n^Z + stty raw -echo;fg\nstty rows 47 cols 107\nexport TERM=xterm-256color\nexec /bin/bash\n"
 }
 
 # ---- Dispatcher ----
